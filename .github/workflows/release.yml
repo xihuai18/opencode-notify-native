@@ -1,0 +1,76 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install extension deps
+        run: npm ci
+
+      - name: Install plugin deps
+        run: npm ci --prefix opencode-plugin
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Build plugin
+        run: npm run build --prefix opencode-plugin
+
+      - name: Package VSIX
+        run: npm run package:vsix
+
+      - name: Pack plugin tarball
+        working-directory: opencode-plugin
+        run: npm pack
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-notify-vscode-artifacts
+          path: |
+            *.vsix
+            opencode-plugin/*.tgz
+
+      - name: Check plugin version publish status
+        id: plugin_version
+        working-directory: opencode-plugin
+        shell: bash
+        run: |
+          set -e
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish plugin to npm (optional)
+        if: ${{ secrets.NPM_TOKEN != '' && steps.plugin_version.outputs.already_published != 'true' }}
+        working-directory: opencode-plugin
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish extension to marketplace (optional)
+        if: ${{ secrets.VSCE_PAT != '' }}
+        run: npm run publish:marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}

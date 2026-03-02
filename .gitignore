@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.vsix
+*.tgz
+*.tsbuildinfo
+opencode-plugin/node_modules/
+opencode-plugin/dist/
+opencode-plugin/tmp-pack-test/

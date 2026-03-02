@@ -1,0 +1,54 @@
+{
+  "name": "@leo000001/opencode-notify-vscode",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that writes cross-platform notification requests for a VS Code companion extension",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('tsconfig.tsbuildinfo',{force:true});\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/__tests__/*.test.js",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run build && npm test"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "notify",
+    "notification",
+    "vscode"
+  ],
+  "license": "MIT",
+  "author": "xihuai18",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.2.10",
+    "@opencode-ai/sdk": "^1.2.10"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.2.10",
+    "@opencode-ai/sdk": "^1.2.10",
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
