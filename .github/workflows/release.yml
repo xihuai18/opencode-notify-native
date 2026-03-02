@@ -7,10 +7,11 @@ on:
       - "v*"
 
 jobs:
-  package:
+  plugin:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,20 +22,28 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      - name: Install extension deps
-        run: npm ci
-
       - name: Install plugin deps
         run: npm ci --prefix opencode-plugin
 
-      - name: Build extension
-        run: npm run build
+      - name: Verify tag matches package version
+        working-directory: opencode-plugin
+        shell: bash
+        run: |
+          set -e
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match opencode-plugin/package.json version v${VERSION}" >&2
+            exit 1
+          fi
 
       - name: Build plugin
         run: npm run build --prefix opencode-plugin
 
-      - name: Package VSIX
-        run: npm run package:vsix
+      - name: Typecheck plugin
+        run: npm run typecheck --prefix opencode-plugin
+
+      - name: Test plugin
+        run: npm test --prefix opencode-plugin
 
       - name: Pack plugin tarball
         working-directory: opencode-plugin
@@ -43,10 +52,8 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: opencode-notify-vscode-artifacts
-          path: |
-            *.vsix
-            opencode-plugin/*.tgz
+          name: opencode-notify-plugin-artifacts
+          path: opencode-plugin/*.tgz
 
       - name: Check plugin version publish status
         id: plugin_version
@@ -65,12 +72,6 @@ jobs:
       - name: Publish plugin to npm (optional)
         if: ${{ secrets.NPM_TOKEN != '' && steps.plugin_version.outputs.already_published != 'true' }}
         working-directory: opencode-plugin
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish extension to marketplace (optional)
-        if: ${{ secrets.VSCE_PAT != '' }}
-        run: npm run publish:marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}

@@ -1,64 +1,91 @@
-# AGENTS.md - opencode-notify-vscode
+# AGENTS.md - opencode-notify-native
 
-## 1) Scope
+## 1) Repository purpose
 
-This repository contains two deliverables:
+This repository maintains a single deliverable:
 
-1. OpenCode plugin package: `@leo000001/opencode-notify-vscode`
-2. VS Code companion extension: `xihuai18.opencode-notify-vscode`
+- npm plugin: `@leo000001/opencode-notify-native`
 
-The plugin writes queue events. The extension sends OS-native notifications and handles click-to-jump.
+The plugin sends native system notifications directly from OpenCode runtime events.
 
-## 2) Hard constraints
+## 2) Scope and non-goals
 
-- Do not modify OpenCode core source.
-- Keep plugin and extension decoupled (publish independently).
-- Terminal jump must be strict no-op when no matching terminal exists.
-- Default supported event classes:
-  - `complete`
-  - `error`
-  - `attention` (`permission.asked` and `question.asked`)
-- `attention` must keep a third distinct sound profile.
+In scope:
 
-## 3) Runtime architecture
+- Event-driven notifications for `complete` / `error` / `attention`
+- Cross-platform notification backends (Windows/macOS/Linux)
+- Noise control (collapse + cooldown)
+- Safe text handling (sanitize, truncation)
 
-- Queue file: `.opencode/opencode-notify.queue.jsonl`
-- Status file: `.opencode/opencode-notify.status.json`
-- Plugin writes queue entries.
-- Extension watches + polls queue file, tracks byte offsets, emits native notifications.
-- Extension URI handler handles `vscode://<ext-id>/opencode-jump?...`.
+Out of scope:
 
-## 4) Remote behavior
+- VS Code terminal jump
+- Queue/status bridge files
+- VSIX/Marketplace extension publishing
 
-Remote, container, and WSL scenarios are supported through the VS Code UI extension model:
+## 3) OpenCode plugin runtime constraints
 
-- OpenCode runtime can be remote.
-- Notifications are emitted on the local user machine from the VS Code UI side.
+Based on docs and source:
 
-## 5) Platform notes
+- Runtime loads plugin module exports and invokes plugin functions.
+- `event` hooks are not awaited by core event fan-out, so handlers must be non-blocking and fault-tolerant.
+- Named hooks are executed sequentially.
 
-- Windows: Toast via PowerShell + WinRT XML.
-- macOS: `terminal-notifier` preferred for clickable notifications; fallback `osascript` is non-clickable.
-- Linux: `notify-send`; action click depends on daemon support.
+Design rules for this repo:
 
-## 6) Security / privacy defaults
+- Keep module exports minimal and intentional.
+- Never let notification failures break the conversation flow.
+- Use defensive payload parsing for events.
 
-- Redact token-like strings from notification text.
-- Keep body length bounded.
-- Show shortened paths by default.
+## 4) Configuration contract
 
-## 7) Build / validation
+Config file path:
 
-Extension:
+- `.opencode/opencode-native-notify.config.json`
 
-```bash
-npm install
-npm run build
-```
+Backward compatibility: legacy `opencode-notify.config.json` is still accepted.
 
-Plugin:
+Resolution: the first config file found wins.
+
+Supported fields:
+
+- `enabled`
+- `events.complete|error|attention`
+- `soundByEvent.complete|error|attention`
+- `collapseWindowMs`
+- `cooldownMs`
+- `sanitize`
+- `maxBodyLength`
+- `showDirectory`
+- `showSessionId`
+
+## 5) Security and privacy defaults
+
+- Redact token-like substrings in outgoing notification text.
+- Clamp message length.
+- Use short directory rendering by default.
+- Do not persist notification payloads to queue files.
+
+## 6) Build, test, release
+
+Local commands:
 
 ```bash
 npm install --prefix opencode-plugin
 npm run build --prefix opencode-plugin
+npm run typecheck --prefix opencode-plugin
+npm test --prefix opencode-plugin
 ```
+
+Release pipeline:
+
+- CI builds/tests plugin only.
+- Release workflow packs/publishes npm package only.
+
+## 7) Open-source readiness checklist
+
+- README reflects direct-only behavior and platform caveats.
+- `opencode-plugin/package.json` metadata matches current architecture.
+- No committed VSIX or extension artifacts.
+- No reserved-name junk files (`nul`, etc.).
+- Workflows do not publish VS Code extension artifacts.

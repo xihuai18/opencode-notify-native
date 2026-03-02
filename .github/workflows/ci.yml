@@ -5,9 +5,28 @@ on:
     branches: ["**"]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  plugin:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 18
+          - os: ubuntu-latest
+            node: 20
+          - os: ubuntu-latest
+            node: 22
+          - os: windows-latest
+            node: 20
+          - os: macos-latest
+            node: 20
+
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -15,22 +34,36 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-
-      - name: Install extension deps
-        run: npm ci
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: opencode-plugin/package-lock.json
 
       - name: Install plugin deps
         run: npm ci --prefix opencode-plugin
 
-      - name: Build extension
-        run: npm run build
-
       - name: Build plugin
         run: npm run build --prefix opencode-plugin
+
+      - name: Typecheck plugin
+        run: npm run typecheck --prefix opencode-plugin
 
       - name: Test plugin
         run: npm test --prefix opencode-plugin
 
-      - name: Package VSIX
-        run: npm run package:vsix
+      - name: Pack plugin tarball
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == 20 }}
+        working-directory: opencode-plugin
+        run: npm pack
+
+      - name: Smoke test packed import
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == 20 }}
+        shell: bash
+        run: |
+          set -e
+          TGZ=$(ls opencode-plugin/*.tgz | head -n 1)
+          TMP=$(mktemp -d)
+          cp "$TGZ" "$TMP/pkg.tgz"
+          cd "$TMP"
+          npm init -y >/dev/null 2>&1
+          npm install --silent "./pkg.tgz"
+          node --input-type=module -e "import('@leo000001/opencode-notify-native').then(()=>console.log('ok'))" --no-warnings

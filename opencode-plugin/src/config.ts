@@ -1,18 +1,16 @@
-import path from "node:path"
-import { readFile } from "node:fs/promises"
+import path from 'node:path'
+import { readFile } from 'node:fs/promises'
 
-import type { NotifySound, PluginConfig } from "./types.js"
+import type { NotifySound, PluginConfig } from './types.js'
 
 const DEFAULT_CONFIG: PluginConfig = {
   enabled: true,
-  extensionID: "xihuai18.opencode-notify-vscode",
-  queueFile: path.join(".opencode", "opencode-notify.queue.jsonl"),
-  statusFile: path.join(".opencode", "opencode-notify.status.json"),
   sanitize: true,
   maxBodyLength: 200,
   collapseWindowMs: 3000,
   cooldownMs: 30000,
   showDirectory: true,
+  showSessionId: false,
   events: {
     complete: true,
     error: true,
@@ -20,23 +18,17 @@ const DEFAULT_CONFIG: PluginConfig = {
   },
   soundByEvent: {
     complete: true,
-    error: "error",
-    attention: "attention",
+    error: 'error',
+    attention: 'attention',
   },
 }
 
 function isRecord(input: unknown): input is Record<string, unknown> {
-  return typeof input === "object" && input !== null && !Array.isArray(input)
+  return typeof input === 'object' && input !== null && !Array.isArray(input)
 }
 
 function asBoolean(input: unknown, fallback: boolean): boolean {
-  return typeof input === "boolean" ? input : fallback
-}
-
-function asString(input: unknown, fallback: string): string {
-  if (typeof input !== "string") return fallback
-  const value = input.trim()
-  return value.length ? value : fallback
+  return typeof input === 'boolean' ? input : fallback
 }
 
 function asNumber(
@@ -44,15 +36,15 @@ function asNumber(
   fallback: number,
   options: { min?: number; max?: number } = {},
 ): number {
-  if (typeof input !== "number" || !Number.isFinite(input)) return fallback
-  if (typeof options.min === "number" && input < options.min) return options.min
-  if (typeof options.max === "number" && input > options.max) return options.max
+  if (typeof input !== 'number' || !Number.isFinite(input)) return fallback
+  if (typeof options.min === 'number' && input < options.min) return options.min
+  if (typeof options.max === 'number' && input > options.max) return options.max
   return Math.floor(input)
 }
 
 function asSound(input: unknown, fallback: NotifySound): NotifySound {
-  if (typeof input === "boolean") return input
-  if (typeof input === "string") {
+  if (typeof input === 'boolean') return input
+  if (typeof input === 'string') {
     const value = input.trim()
     if (value.length) return value
   }
@@ -65,9 +57,6 @@ function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
   const next: PluginConfig = {
     ...base,
     enabled: asBoolean(input.enabled, base.enabled),
-    extensionID: asString(input.extensionID, base.extensionID),
-    queueFile: asString(input.queueFile, base.queueFile),
-    statusFile: asString(input.statusFile, base.statusFile),
     sanitize: asBoolean(input.sanitize, base.sanitize),
     maxBodyLength: asNumber(input.maxBodyLength, base.maxBodyLength, {
       min: 60,
@@ -82,14 +71,21 @@ function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
       max: 300000,
     }),
     showDirectory: asBoolean(input.showDirectory, base.showDirectory),
+    showSessionId: asBoolean(input.showSessionId, base.showSessionId),
     events: { ...base.events },
     soundByEvent: { ...base.soundByEvent },
   }
 
   if (isRecord(input.events)) {
-    next.events.complete = asBoolean(input.events.complete, next.events.complete)
+    next.events.complete = asBoolean(
+      input.events.complete,
+      next.events.complete,
+    )
     next.events.error = asBoolean(input.events.error, next.events.error)
-    next.events.attention = asBoolean(input.events.attention, next.events.attention)
+    next.events.attention = asBoolean(
+      input.events.attention,
+      next.events.attention,
+    )
   }
 
   if (isRecord(input.soundByEvent)) {
@@ -97,17 +93,13 @@ function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
       input.soundByEvent.complete,
       next.soundByEvent.complete,
     )
-    next.soundByEvent.error = asSound(input.soundByEvent.error, next.soundByEvent.error)
+    next.soundByEvent.error = asSound(
+      input.soundByEvent.error,
+      next.soundByEvent.error,
+    )
     next.soundByEvent.attention = asSound(
       input.soundByEvent.attention,
       next.soundByEvent.attention,
-    )
-  }
-
-  if (typeof process.env.OPENCODE_NOTIFY_EXTENSION_ID === "string") {
-    next.extensionID = asString(
-      process.env.OPENCODE_NOTIFY_EXTENSION_ID,
-      next.extensionID,
     )
   }
 
@@ -115,7 +107,7 @@ function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
 }
 
 async function readConfigFile(filePath: string): Promise<unknown> {
-  const content = await readFile(filePath, "utf8")
+  const content = await readFile(filePath, 'utf8')
   return JSON.parse(content)
 }
 
@@ -124,23 +116,24 @@ export async function loadPluginConfig(
   directory: string,
 ): Promise<PluginConfig> {
   const candidates = [
-    path.join(worktree, ".opencode", "opencode-notify.config.json"),
-    path.join(worktree, "opencode-notify.config.json"),
-    path.join(directory, "opencode-notify.config.json"),
+    path.join(worktree, '.opencode', 'opencode-native-notify.config.json'),
+    path.join(worktree, 'opencode-native-notify.config.json'),
+    path.join(directory, 'opencode-native-notify.config.json'),
+    path.join(worktree, '.opencode', 'opencode-notify.config.json'),
+    path.join(worktree, 'opencode-notify.config.json'),
+    path.join(directory, 'opencode-notify.config.json'),
   ]
-
-  let config = { ...DEFAULT_CONFIG }
 
   for (const candidate of candidates) {
     try {
       const parsed = await readConfigFile(candidate)
-      config = mergeConfig(config, parsed)
+      return mergeConfig({ ...DEFAULT_CONFIG }, parsed)
     } catch {
       // Missing or invalid config files are ignored by default.
     }
   }
 
-  return config
+  return { ...DEFAULT_CONFIG }
 }
 
 export function defaultPluginConfig(): PluginConfig {

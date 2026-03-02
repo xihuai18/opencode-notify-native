@@ -1,75 +1,18 @@
 {
-  "name": "opencode-notify-vscode",
-  "displayName": "OpenCode Notify",
-  "description": "VS Code companion extension for OpenCode native notifications and terminal jump",
+  "name": "opencode-notify-native-repo",
   "version": "0.1.0",
-  "publisher": "xihuai18",
+  "private": true,
+  "description": "Repository tooling for @leo000001/opencode-notify-native direct notification plugin",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xihuai18/opencode-notify-vscode.git"
-  },
-  "homepage": "https://github.com/xihuai18/opencode-notify-vscode#readme",
-  "bugs": {
-    "url": "https://github.com/xihuai18/opencode-notify-vscode/issues"
-  },
-  "engines": {
-    "vscode": "^1.89.0"
-  },
-  "categories": [
-    "Other"
-  ],
-  "main": "./dist/extension.js",
-  "extensionKind": [
-    "ui"
-  ],
-  "activationEvents": [
-    "onStartupFinished",
-    "onUri",
-    "onCommand:opencodeNotify.scanNow",
-    "onCommand:opencodeNotify.showDiagnostics"
-  ],
-  "contributes": {
-    "commands": [
-      {
-        "command": "opencodeNotify.scanNow",
-        "title": "OpenCode Notify: Scan Queue Now"
-      },
-      {
-        "command": "opencodeNotify.showDiagnostics",
-        "title": "OpenCode Notify: Show Diagnostics"
-      }
-    ],
-    "configuration": {
-      "title": "OpenCode Notify",
-      "properties": {
-        "opencodeNotify.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable reading OpenCode notification queue files."
-        },
-        "opencodeNotify.pollIntervalMs": {
-          "type": "number",
-          "default": 2000,
-          "minimum": 500,
-          "maximum": 60000,
-          "description": "Fallback polling interval when file watcher events are missed."
-        }
-      }
-    }
+    "url": "https://github.com/xihuai18/opencode-notify-native.git"
   },
   "scripts": {
-    "build": "tsc -p ./",
-    "watch": "tsc -w -p ./",
-    "build:all": "npm run build && npm run build --prefix opencode-plugin",
-    "install:marketplace": "code --install-extension xihuai18.opencode-notify-vscode",
-    "package:vsix": "vsce package",
-    "publish:marketplace": "vsce publish"
-  },
-  "devDependencies": {
-    "@vscode/vsce": "^3.6.2",
-    "@types/node": "^20.14.10",
-    "@types/vscode": "^1.89.0",
-    "typescript": "^5.5.3"
+    "build": "npm run build --prefix opencode-plugin",
+    "test": "npm test --prefix opencode-plugin",
+    "typecheck": "npm run typecheck --prefix opencode-plugin",
+    "build:all": "npm run build && npm run test",
+    "pack:plugin": "npm --prefix opencode-plugin pack"
   }
 }

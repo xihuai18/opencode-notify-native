@@ -1,40 +1,27 @@
-# @leo000001/opencode-notify-vscode
+# @leo000001/opencode-notify-native
 
-OpenCode plugin that writes notification requests into:
-
-- `.opencode/opencode-notify.queue.jsonl`
-
-A VS Code companion extension consumes this queue and sends native notifications on your local machine.
+OpenCode plugin that sends native OS notifications directly.
 
 ## Install
 
-Add this plugin to `opencode.json`:
+Add to `opencode.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@leo000001/opencode-notify-vscode"]
+  "plugin": ["@leo000001/opencode-notify-native"]
 }
 ```
 
-## Why queue mode
+## Optional config
 
-This plugin can run in local, WSL, SSH, or container environments.
-By writing queue events into the workspace, the VS Code UI extension can always notify on the computer you are actively using.
+Create `.opencode/opencode-native-notify.config.json`:
 
-## Included tools
-
-- `notify_test`: enqueue a test notification (`complete`/`error`/`attention`)
-- `notify_check`: show queue and status diagnostics
-
-## Config file (optional)
-
-Create `.opencode/opencode-notify.config.json` in your project root:
+Config resolution: the first config file found wins. Legacy `opencode-notify.config.json` is accepted as a fallback.
 
 ```json
 {
   "enabled": true,
-  "extensionID": "xihuai18.opencode-notify-vscode",
   "events": {
     "complete": true,
     "error": true,
@@ -49,6 +36,36 @@ Create `.opencode/opencode-notify.config.json` in your project root:
   "cooldownMs": 30000,
   "sanitize": true,
   "maxBodyLength": 200,
-  "showDirectory": true
+  "showDirectory": true,
+  "showSessionId": false
 }
+```
+
+## Event mapping
+
+- `complete`: `session.status` idle and legacy `session.idle`
+- `error`: `session.error` (skips `MessageAbortedError`)
+- `attention`: permission and question events
+
+Note: `permission.asked` and `question.asked` are runtime events and may not be present in the SDK event union type in some versions.
+
+## Platform dependencies
+
+- Windows: PowerShell toast APIs (built in)
+- macOS: `terminal-notifier` recommended, fallback `osascript`
+- Linux: `notify-send` (no standard sound support; best-effort sound via `canberra-gtk-play` when available)
+
+## Sound values
+
+- `false`: silent
+- `true`: enabled sound (best-effort, per-platform defaults)
+- Windows: you can pass `ms-winsoundevent:...`
+- macOS: you can pass a sound name (for example `Glass`, `Basso`)
+
+## Development
+
+```bash
+npm run build
+npm run typecheck
+npm test
 ```

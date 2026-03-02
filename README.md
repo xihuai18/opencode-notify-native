@@ -1,102 +1,95 @@
-# opencode-notify-vscode
+# opencode-notify-native
 
-OpenCode notification stack with two components:
+Direct native notification plugin for OpenCode.
 
-1. OpenCode plugin (npm): `@leo000001/opencode-notify-vscode`
-2. VS Code extension (Marketplace): `xihuai18.opencode-notify-vscode`
+## What this repository ships
 
-This split is required because terminal jump needs VS Code terminal APIs.
+- npm package: `@leo000001/opencode-notify-native`
 
-## What you get
+## Features
 
-- Native notification-center alerts on Linux, Windows, macOS
-- Clear source text in every notification (`host/project/path/session`)
-- Event types:
-  - `complete` (task done)
-  - `error` (task failed)
-  - `attention` (input required: `permission.asked` / `question.asked`)
-- Third sound profile for `attention`
-- Click notification -> jump back to an existing VS Code integrated terminal
-  - strict no-op if no matching terminal exists
+- Native notifications on Windows, macOS, Linux
+- Automatic event hooks:
+  - `complete`
+  - `error`
+  - `attention`
+- Per-event sound profile
+- Notification anti-spam controls (collapse + cooldown)
+- Basic text sanitization and truncation
 
-## Install (recommended)
+## Install
 
-### 1) OpenCode plugin
+### From npm
 
 Add to `opencode.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@leo000001/opencode-notify-vscode"]
+  "plugin": ["@leo000001/opencode-notify-native"]
 }
 ```
 
-### 2) VS Code extension
+### Local development install
 
-```bash
-code --install-extension xihuai18.opencode-notify-vscode
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["file:///ABSOLUTE/PATH/TO/opencode-plugin/dist/index.js"]
+}
 ```
 
-Or from this repo:
+Use your own absolute path. Do not copy machine-specific paths from examples.
 
-```bash
-npm run install:marketplace
+## Optional config
+
+Create `.opencode/opencode-native-notify.config.json`:
+
+Config resolution: the first config file found wins. Legacy `opencode-notify.config.json` is accepted as a fallback.
+
+```json
+{
+  "enabled": true,
+  "events": {
+    "complete": true,
+    "error": true,
+    "attention": true
+  },
+  "soundByEvent": {
+    "complete": true,
+    "error": "error",
+    "attention": "attention"
+  },
+  "collapseWindowMs": 3000,
+  "cooldownMs": 30000,
+  "sanitize": true,
+  "maxBodyLength": 200,
+  "showDirectory": true,
+  "showSessionId": false
+}
 ```
 
-VSIX fallback:
+## Platform notes
 
-```bash
-code --install-extension ./opencode-notify-vscode-<version>.vsix
-```
+- Windows: notifications depend on system notification settings and Focus Assist.
+- macOS: tries `terminal-notifier` first, falls back to `osascript`.
+- Linux: requires `notify-send` (for example `libnotify-bin` on Debian/Ubuntu). `notify-send` has no standard sound support; this plugin can only best-effort play sounds when `canberra-gtk-play` is available.
 
-## Remote / WSL / Containers
-
-This project is designed so notifications are sent by the VS Code extension on your local UI machine.
-
-- OpenCode can run locally, in WSL, SSH, or dev containers.
-- The OpenCode plugin writes queue events into workspace `.opencode/`.
-- The VS Code UI extension consumes the queue and sends local OS notifications.
-
-## Verify quickly
-
-1. Run OpenCode tool `notify_test` (default `attention`).
-2. Run VS Code command `OpenCode Notify: Show Diagnostics`.
-
-## Add to .gitignore
-
-Queue and status files are runtime artifacts. Add these to your project `.gitignore`:
-
-```text
-.opencode/opencode-notify.queue.jsonl
-.opencode/opencode-notify.status.json
-```
-
-## Repository layout
-
-- `opencode-plugin/` -> npm plugin source (`@leo000001/opencode-notify-vscode`)
-- `src/` -> VS Code extension source
-
-## Build
-
-Extension:
-
-```bash
-npm install
-npm run build
-```
-
-Plugin:
+## Build and test
 
 ```bash
 npm install --prefix opencode-plugin
 npm run build --prefix opencode-plugin
+npm run typecheck --prefix opencode-plugin
+npm test --prefix opencode-plugin
 ```
 
-## Release readiness
+## Release
 
-- CI workflow: `.github/workflows/ci.yml`
-- Release workflow: `.github/workflows/release.yml`
-  - Packs VSIX
-  - Packs plugin tarball
-  - Optional publish with `NPM_TOKEN` and `VSCE_PAT`
+- CI and release workflows publish only the npm plugin.
+- Tag push (`v*`) runs build/typecheck/test/pack and optionally publishes to npm when `NPM_TOKEN` is configured.
+
+## Design and maintenance docs
+
+- Runtime design: `DESIGN.md`
+- Maintainer guardrails: `AGENTS.md`

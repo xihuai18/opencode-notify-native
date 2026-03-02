@@ -1,8 +1,12 @@
 node_modules/
 dist/
-*.vsix
 *.tgz
+*.tar
 *.tsbuildinfo
+.opencode/
+nul
+NUL
 opencode-plugin/node_modules/
 opencode-plugin/dist/
+opencode-plugin/dist-test/
 opencode-plugin/tmp-pack-test/

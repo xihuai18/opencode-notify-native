@@ -1,50 +1,16 @@
-import path from "node:path"
-import { createHash } from "node:crypto"
-import { hostname } from "node:os"
+import type { Hooks, PluginInput } from '@opencode-ai/plugin'
+import type { NotifyEventType } from './types.js'
 
-import type { Hooks, PluginInput } from "@opencode-ai/plugin"
-import type { NotifyEventType, QueueEntry } from "./types.js"
+import { loadPluginConfig } from './config.js'
+import { createEventClassifier } from './classify.js'
+import { NotifyDispatcher } from './dispatcher.js'
+import { firstLine, sanitizeText, shortPath, toProjectName } from './text.js'
+import { notifyNativeFallback } from './native.js'
 
-import { loadPluginConfig } from "./config.js"
-import { classifyEvent } from "./classify.js"
-import { QueueDispatcher } from "./queue.js"
-import { createNotifyTools } from "./tools.js"
-import { firstLine, sanitizeText, shortPath, toProjectName } from "./text.js"
-
-function originKey(worktree: string): string {
-  return createHash("sha256").update(worktree, "utf8").digest("hex").slice(0, 8)
-}
-
-function buildJumpUri(input: {
-  extensionID: string
-  ppid: number
-  worktree: string
-  directory: string
-  sessionID?: string
-  origin: string
-}): string {
-  const query = new URLSearchParams({
-    ppid: String(input.ppid),
-    worktree: input.worktree,
-    directory: input.directory,
-    origin: input.origin,
-  })
-  if (input.sessionID) query.set("sessionID", input.sessionID)
-  return `vscode://${input.extensionID}/opencode-jump?${query.toString()}`
-}
-
-async function getSessionTitle(input: PluginInput, sessionID?: string): Promise<string | undefined> {
-  if (!sessionID) return undefined
-  try {
-    const result = await input.client.session.get({
-      path: { id: sessionID },
-      query: { directory: input.directory },
-      throwOnError: true,
-    })
-    return typeof result.data.title === "string" ? result.data.title : undefined
-  } catch {
-    return undefined
-  }
+function labelForEvent(event: NotifyEventType): string {
+  if (event === 'complete') return 'Complete'
+  if (event === 'error') return 'Error'
+  return 'Attention'
 }
 
 function eventEnabled(
@@ -52,8 +18,8 @@ function eventEnabled(
   config: Awaited<ReturnType<typeof loadPluginConfig>>,
 ): boolean {
   if (!config.enabled) return false
-  if (event === "complete") return config.events.complete
-  if (event === "error") return config.events.error
+  if (event === 'complete') return config.events.complete
+  if (event === 'error') return config.events.error
   return config.events.attention
 }
 
@@ -61,137 +27,105 @@ function eventSound(
   event: NotifyEventType,
   config: Awaited<ReturnType<typeof loadPluginConfig>>,
 ) {
-  if (event === "complete") return config.soundByEvent.complete
-  if (event === "error") return config.soundByEvent.error
+  if (event === 'complete') return config.soundByEvent.complete
+  if (event === 'error') return config.soundByEvent.error
   return config.soundByEvent.attention
 }
 
 function makeBody(input: {
-  host: string
   project: string
-  origin: string
   sessionID?: string
   event: NotifyEventType
   summary: string
   directory: string
   showDirectory: boolean
+  showSessionId: boolean
 }): string {
-  const lines = [
-    `From: ${input.host} · ${input.project} · ${input.origin}`,
-    `Session: ${(input.sessionID || "global").slice(0, 8)} · ${input.event}`,
-  ]
-  if (input.showDirectory) lines.push(`Dir: ${input.directory}`)
-  lines.push(`Note: ${input.summary}`)
-  return lines.join("\n")
-}
+  const lines: string[] = []
+  const headline = `${labelForEvent(input.event)}: ${input.summary}`.trim()
+  lines.push(headline)
 
-function testSummary(kind: NotifyEventType): string {
-  if (kind === "complete") return "Test notification: task completed"
-  if (kind === "error") return "Test notification: task failed"
-  return "Test notification: your input is required"
+  if (input.showDirectory) {
+    lines.push(`Dir: ${input.directory}`)
+  }
+  if (input.showSessionId && input.sessionID) {
+    lines.push(`Session: ${input.sessionID.slice(0, 8)}`)
+  }
+
+  return lines.join('\n')
 }
 
 export default async function OpenCodeNotifyPlugin(
   input: PluginInput,
 ): Promise<Hooks> {
   const config = await loadPluginConfig(input.worktree, input.directory)
-  const host = hostname()
-  const project = toProjectName(input.worktree, input.directory)
-  const origin = originKey(input.worktree)
-  const queuePath = path.join(input.worktree, config.queueFile)
-  const statusPath = path.join(input.worktree, config.statusFile)
+  const project = sanitizeText(toProjectName(input.worktree, input.directory), {
+    enabled: config.sanitize,
+    maxLength: 60,
+  })
+  const classifyEvent = createEventClassifier()
 
-  const dispatcher = new QueueDispatcher({
-    queuePath,
+  const dispatcher = new NotifyDispatcher({
     collapseWindowMs: config.collapseWindowMs,
     cooldownMs: config.cooldownMs,
+    send: async (payload) => {
+      await notifyNativeFallback({
+        title: payload.title,
+        body: payload.body,
+        event: payload.event,
+        sound: payload.sound,
+        group: payload.replaceKey,
+      })
+    },
   })
 
-  const enqueue = async (inputEvent: {
+  const notify = async (inputEvent: {
     event: NotifyEventType
     source: string
     summary: string
     sessionID?: string
-    dedupeKey: string
+    collapseKey: string
   }) => {
     if (!eventEnabled(inputEvent.event, config)) return
 
-    const summary = sanitizeText(firstLine(inputEvent.summary), {
-      enabled: config.sanitize,
-      maxLength: Math.max(60, config.maxBodyLength),
-    })
-    const sessionTitle = await getSessionTitle(input, inputEvent.sessionID)
+    const summary = firstLine(inputEvent.summary)
 
-    const entry: QueueEntry = {
-      v: 1,
-      ts: new Date().toISOString(),
-      event: inputEvent.event,
-      source: inputEvent.source,
-      title: `OpenCode · ${project}`,
-      body: sanitizeText(
-        makeBody({
-          host,
-          project,
-          origin,
-          sessionID: inputEvent.sessionID,
-          event: inputEvent.event,
-          summary,
-          directory: shortPath(input.directory),
-          showDirectory: config.showDirectory,
-        }),
-        {
-          enabled: config.sanitize,
-          maxLength: config.maxBodyLength,
-        },
-      ),
-      sessionID: inputEvent.sessionID,
-      sessionTitle,
-      host,
-      project,
-      directory: input.directory,
-      worktree: input.worktree,
-      origin,
-      ppid: process.ppid,
-      jumpUri: buildJumpUri({
-        extensionID: config.extensionID,
-        ppid: process.ppid,
-        worktree: input.worktree,
-        directory: input.directory,
+    const replaceKey = `opencode:${project}:${inputEvent.event}:${inputEvent.sessionID || 'global'}`
+
+    const body = sanitizeText(
+      makeBody({
+        project,
         sessionID: inputEvent.sessionID,
-        origin,
+        event: inputEvent.event,
+        summary,
+        directory: shortPath(input.directory),
+        showDirectory: config.showDirectory,
+        showSessionId: config.showSessionId,
       }),
+      { enabled: config.sanitize, maxLength: config.maxBodyLength },
+    )
+
+    dispatcher.enqueue({
+      event: inputEvent.event,
+      title: `OpenCode · ${project}`,
+      body,
       sound: eventSound(inputEvent.event, config),
-      dedupeKey: inputEvent.dedupeKey,
-    }
-
-    dispatcher.enqueue(entry)
-  }
-
-  const emitTest = async (event: NotifyEventType, sessionID: string) => {
-    await enqueue({
-      event,
-      source: "tool.notify_test",
-      summary: testSummary(event),
-      sessionID,
-      dedupeKey: `${event}:${sessionID || "global"}`,
+      collapseKey: inputEvent.collapseKey,
+      replaceKey,
     })
   }
 
-  return {
+  const hooks: Hooks = {
     event: async ({ event }) => {
       try {
         const classified = classifyEvent(event)
         if (!classified) return
-        await enqueue(classified)
+        await notify(classified)
       } catch {
         // Notification side effects should never block OpenCode flows.
       }
     },
-    tool: createNotifyTools({
-      config,
-      queuePath,
-      statusPath,
-      emitTest,
-    }),
   }
+
+  return hooks
 }
