@@ -4,7 +4,13 @@ import type { NotifyEventType } from './types.js'
 import { loadPluginConfig } from './config.js'
 import { createEventClassifier } from './classify.js'
 import { NotifyDispatcher } from './dispatcher.js'
-import { firstLine, sanitizeText, shortPath, toProjectName } from './text.js'
+import {
+  firstLine,
+  formatCollapsedBody,
+  sanitizeText,
+  shortPath,
+  toProjectName,
+} from './text.js'
 import { notifyNativeFallback } from './native.js'
 
 function labelForEvent(event: NotifyEventType): string {
@@ -33,7 +39,6 @@ function eventSound(
 }
 
 function makeBody(input: {
-  project: string
   sessionID?: string
   event: NotifyEventType
   summary: string
@@ -68,10 +73,19 @@ export default async function OpenCodeNotifyPlugin(
   const dispatcher = new NotifyDispatcher({
     collapseWindowMs: config.collapseWindowMs,
     cooldownMs: config.cooldownMs,
-    send: async (payload) => {
+    send: async (payload, count) => {
+      const title = sanitizeText(payload.title, {
+        enabled: config.sanitize,
+        // Title limits vary by platform; keep it short and predictable.
+        maxLength: 120,
+      })
+      const body = formatCollapsedBody(payload.body, count, {
+        enabled: config.sanitize,
+        maxLength: config.maxBodyLength,
+      })
       await notifyNativeFallback({
-        title: payload.title,
-        body: payload.body,
+        title,
+        body,
         event: payload.event,
         sound: payload.sound,
         group: payload.replaceKey,
@@ -79,7 +93,7 @@ export default async function OpenCodeNotifyPlugin(
     },
   })
 
-  const notify = async (inputEvent: {
+  const notify = (inputEvent: {
     event: NotifyEventType
     source: string
     summary: string
@@ -92,18 +106,14 @@ export default async function OpenCodeNotifyPlugin(
 
     const replaceKey = `opencode:${project}:${inputEvent.event}:${inputEvent.sessionID || 'global'}`
 
-    const body = sanitizeText(
-      makeBody({
-        project,
-        sessionID: inputEvent.sessionID,
-        event: inputEvent.event,
-        summary,
-        directory: shortPath(input.directory),
-        showDirectory: config.showDirectory,
-        showSessionId: config.showSessionId,
-      }),
-      { enabled: config.sanitize, maxLength: config.maxBodyLength },
-    )
+    const body = makeBody({
+      sessionID: inputEvent.sessionID,
+      event: inputEvent.event,
+      summary,
+      directory: shortPath(input.directory),
+      showDirectory: config.showDirectory,
+      showSessionId: config.showSessionId,
+    })
 
     dispatcher.enqueue({
       event: inputEvent.event,
@@ -120,7 +130,7 @@ export default async function OpenCodeNotifyPlugin(
       try {
         const classified = classifyEvent(event)
         if (!classified) return
-        await notify(classified)
+        notify(classified)
       } catch {
         // Notification side effects should never block OpenCode flows.
       }

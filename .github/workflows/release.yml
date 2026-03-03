@@ -10,7 +10,7 @@ jobs:
   plugin:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - name: Checkout
@@ -23,41 +23,38 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Install plugin deps
-        run: npm ci --prefix opencode-plugin
+        run: npm ci
 
       - name: Verify tag matches package version
-        working-directory: opencode-plugin
         shell: bash
         run: |
           set -e
           VERSION=$(node -p "require('./package.json').version")
           if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match opencode-plugin/package.json version v${VERSION}" >&2
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version v${VERSION}" >&2
             exit 1
           fi
 
       - name: Build plugin
-        run: npm run build --prefix opencode-plugin
+        run: npm run build
 
       - name: Typecheck plugin
-        run: npm run typecheck --prefix opencode-plugin
+        run: npm run typecheck
 
       - name: Test plugin
-        run: npm test --prefix opencode-plugin
+        run: npm test
 
       - name: Pack plugin tarball
-        working-directory: opencode-plugin
         run: npm pack
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: opencode-notify-plugin-artifacts
-          path: opencode-plugin/*.tgz
+          path: "*.tgz"
 
       - name: Check plugin version publish status
         id: plugin_version
-        working-directory: opencode-plugin
         shell: bash
         run: |
           set -e
@@ -71,7 +68,6 @@ jobs:
 
       - name: Publish plugin to npm (optional)
         if: ${{ secrets.NPM_TOKEN != '' && steps.plugin_version.outputs.already_published != 'true' }}
-        working-directory: opencode-plugin
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

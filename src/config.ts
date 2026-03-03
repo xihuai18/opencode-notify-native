@@ -24,6 +24,20 @@ const DEFAULT_CONFIG: PluginConfig = {
   },
 }
 
+function debugEnabled(): boolean {
+  const value = process.env.OPENCODE_NOTIFY_NATIVE_DEBUG?.trim().toLowerCase()
+  return value === '1' || value === 'true' || value === 'yes'
+}
+
+function debugWarn(message: string): void {
+  if (!debugEnabled()) return
+  try {
+    process.stderr.write(`[notify-native] ${message}\n`)
+  } catch {
+    // Best-effort only.
+  }
+}
+
 function isRecord(input: unknown): input is Record<string, unknown> {
   return typeof input === 'object' && input !== null && !Array.isArray(input)
 }
@@ -129,8 +143,7 @@ function dedupePaths(paths: string[]): string[] {
   const output: string[] = []
   for (const filePath of paths) {
     const resolved = path.resolve(filePath)
-    const key =
-      process.platform === 'win32' ? resolved.toLowerCase() : resolved
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved
     if (seen.has(key)) continue
     seen.add(key)
     output.push(resolved)
@@ -145,7 +158,20 @@ async function mergeIfExists(
   try {
     const parsed = await readConfigFile(filePath)
     return mergeConfig(base, parsed)
-  } catch {
+  } catch (error) {
+    const code =
+      typeof error === 'object' &&
+      error &&
+      'code' in error &&
+      typeof (error as any).code === 'string'
+        ? String((error as any).code)
+        : ''
+    if (code === 'ENOENT' || code === 'ENOTDIR') return base
+    debugWarn(
+      `Failed to load config ${filePath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
     return base
   }
 }
@@ -157,33 +183,31 @@ export async function loadPluginConfig(
   const configDir = resolveConfigDir()
   const override = resolveOverridePath()
 
-  const layers = dedupePaths(
-    [
-      path.join(configDir, 'notify-native.config.json'),
-      path.join(configDir, 'opencode-native-notify.config.json'),
-      path.join(configDir, 'opencode-notify.config.json'),
+  const layers = dedupePaths([
+    path.join(configDir, 'notify-native.config.json'),
+    path.join(configDir, 'opencode-native-notify.config.json'),
+    path.join(configDir, 'opencode-notify.config.json'),
 
-      path.join(worktree, 'notify-native.config.json'),
-      path.join(worktree, 'opencode-native-notify.config.json'),
-      path.join(worktree, 'opencode-notify.config.json'),
+    path.join(worktree, 'notify-native.config.json'),
+    path.join(worktree, 'opencode-native-notify.config.json'),
+    path.join(worktree, 'opencode-notify.config.json'),
 
-      path.join(directory, 'notify-native.config.json'),
-      path.join(directory, 'opencode-native-notify.config.json'),
-      path.join(directory, 'opencode-notify.config.json'),
+    path.join(directory, 'notify-native.config.json'),
+    path.join(directory, 'opencode-native-notify.config.json'),
+    path.join(directory, 'opencode-notify.config.json'),
 
-      path.join(worktree, '.opencode', 'notify-native.config.json'),
-      path.join(worktree, '.opencode', 'opencode-native-notify.config.json'),
-      path.join(worktree, '.opencode', 'opencode-notify.config.json'),
+    path.join(worktree, '.opencode', 'notify-native.config.json'),
+    path.join(worktree, '.opencode', 'opencode-native-notify.config.json'),
+    path.join(worktree, '.opencode', 'opencode-notify.config.json'),
 
-      path.join(directory, '.opencode', 'notify-native.config.json'),
-      path.join(directory, '.opencode', 'opencode-native-notify.config.json'),
-      path.join(directory, '.opencode', 'opencode-notify.config.json'),
+    path.join(directory, '.opencode', 'notify-native.config.json'),
+    path.join(directory, '.opencode', 'opencode-native-notify.config.json'),
+    path.join(directory, '.opencode', 'opencode-notify.config.json'),
 
-      ...(override ? [override] : []),
-    ],
-  )
+    ...(override ? [override] : []),
+  ])
 
-  let config = { ...DEFAULT_CONFIG }
+  let config = defaultPluginConfig()
   for (const layer of layers) {
     config = await mergeIfExists(config, layer)
   }
@@ -191,5 +215,9 @@ export async function loadPluginConfig(
 }
 
 export function defaultPluginConfig(): PluginConfig {
-  return { ...DEFAULT_CONFIG }
+  return {
+    ...DEFAULT_CONFIG,
+    events: { ...DEFAULT_CONFIG.events },
+    soundByEvent: { ...DEFAULT_CONFIG.soundByEvent },
+  }
 }

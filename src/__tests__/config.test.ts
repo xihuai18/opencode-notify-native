@@ -4,7 +4,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 
-import { loadPluginConfig } from '../config.js'
+import { defaultPluginConfig, loadPluginConfig } from '../config.js'
 
 test('loadPluginConfig applies project .opencode override', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
@@ -67,7 +67,8 @@ test('loadPluginConfig supports layered global + project config', async () => {
     if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = prevXdg
 
-    if (prevOverride === undefined) delete process.env.OPENCODE_NOTIFY_NATIVE_CONFIG
+    if (prevOverride === undefined)
+      delete process.env.OPENCODE_NOTIFY_NATIVE_CONFIG
     else process.env.OPENCODE_NOTIFY_NATIVE_CONFIG = prevOverride
   }
 })
@@ -98,4 +99,37 @@ test('loadPluginConfig allows env override file path', async () => {
     if (prev === undefined) delete process.env.OPENCODE_NOTIFY_NATIVE_CONFIG
     else process.env.OPENCODE_NOTIFY_NATIVE_CONFIG = prev
   }
+})
+
+test('loadPluginConfig ignores invalid JSON (fail closed)', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  const overridePath = path.join(root, 'override.json')
+
+  const prev = process.env.OPENCODE_NOTIFY_NATIVE_CONFIG
+  process.env.OPENCODE_NOTIFY_NATIVE_CONFIG = overridePath
+
+  try {
+    await writeFile(
+      path.join(root, 'notify-native.config.json'),
+      JSON.stringify({ showSessionId: true }),
+      'utf8',
+    )
+    await writeFile(overridePath, '{ this is not json', 'utf8')
+
+    const config = await loadPluginConfig(root, root)
+    assert.equal(config.showSessionId, true)
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_NOTIFY_NATIVE_CONFIG
+    else process.env.OPENCODE_NOTIFY_NATIVE_CONFIG = prev
+  }
+})
+
+test('defaultPluginConfig returns a deep copy', () => {
+  const a = defaultPluginConfig()
+  const b = defaultPluginConfig()
+  a.events.complete = false
+  a.soundByEvent.error = false
+
+  assert.equal(b.events.complete, true)
+  assert.equal(b.soundByEvent.error, 'error')
 })

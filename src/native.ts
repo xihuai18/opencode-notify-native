@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 
 import type { NotifyEventType, NotifySound } from './types.js'
 
-function escapeXml(input: string): string {
+export function escapeXml(input: string): string {
   return input
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -12,7 +12,7 @@ function escapeXml(input: string): string {
     .replace(/'/g, '&apos;')
 }
 
-function escapePango(input: string): string {
+export function escapePango(input: string): string {
   return input
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -26,7 +26,7 @@ function hashHex(input: string, length: number): string {
     .slice(0, length)
 }
 
-function fnv1a32(input: string): number {
+export function fnv1a32(input: string): number {
   let hash = 0x811c9dc5
   for (let i = 0; i < input.length; i += 1) {
     hash ^= input.charCodeAt(i)
@@ -84,7 +84,7 @@ function normalizeSound(
   return 'attention'
 }
 
-function windowsAudioNode(sound: boolean | string): string {
+export function windowsAudioNode(sound: boolean | string): string {
   if (sound === false) return '<audio silent="true"/>'
   if (sound === true) {
     return '<audio src="ms-winsoundevent:Notification.Default"/>'
@@ -104,7 +104,10 @@ function windowsAudioNode(sound: boolean | string): string {
   return ''
 }
 
-function macSoundName(event: NotifyEventType, sound: boolean | string): string {
+export function macSoundName(
+  event: NotifyEventType,
+  sound: boolean | string,
+): string {
   if (sound === true) {
     if (event === 'error') return 'Basso'
     if (event === 'attention') return 'Glass'
@@ -118,72 +121,25 @@ function macSoundName(event: NotifyEventType, sound: boolean | string): string {
   return ''
 }
 
-function shellEscapeForDoubleQuotes(input: string): string {
-  return input
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\$/g, '\\$')
-    .replace(/`/g, '\\`')
-}
-
-function macActivateTargets(): string[] {
-  const term = String(process.env.TERM_PROGRAM || '').toLowerCase()
-  const preferred: string[] = []
-
-  if (term.includes('vscode')) preferred.push('Visual Studio Code')
-  else if (term.includes('iterm')) preferred.push('iTerm2')
-  else if (term.includes('apple_terminal')) preferred.push('Terminal')
-  else if (term.includes('wezterm')) preferred.push('WezTerm')
-  else if (term.includes('warp')) preferred.push('Warp')
-  else if (term.includes('ghostty')) preferred.push('Ghostty')
-
-  const fallbacks = [
-    'iTerm2',
-    'Terminal',
-    'WezTerm',
-    'Warp',
-    'Visual Studio Code',
-    'Cursor',
-    'Ghostty',
-  ]
-
-  const seen = new Set<string>()
-  const result: string[] = []
-  for (const name of [...preferred, ...fallbacks]) {
-    if (seen.has(name)) continue
-    seen.add(name)
-    result.push(name)
-  }
-  return result
-}
-
-function macNoopOrActivateCommand(): string {
-  const targets = macActivateTargets()
-  const appleList = targets.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(', ')
-  const script =
-    `try; ` +
-    `set targets to {${appleList}}; ` +
-    `repeat with t in targets; ` +
-    `try; if application t is running then tell application t to activate; exit repeat; end if; end try; ` +
-    `end repeat; ` +
-    `end try`
-
-  // Run via /bin/sh on click (terminal-notifier executes command strings).
-  return `/usr/bin/osascript -e "${shellEscapeForDoubleQuotes(script)}"`
-}
-
 async function notifyWindows(
   title: string,
   body: string,
   sound: boolean | string,
   group: string,
 ): Promise<void> {
+  // Do not bind to an app that would spawn a new window on click.
+  // Explorer is always running and generally results in a no-op activation.
+  const notifierAppIds = ['Microsoft.Windows.Explorer']
+
   const toastGroup = 'opencode-notify'
   // Tag length limits vary across Windows versions; 16 chars is the safest.
   const toastTag = hashHex(group, 16)
   // Use background activation to avoid launching a new app window when the user clicks.
   const xml = `<toast activationType="background"><visual><binding template="ToastGeneric"><text>${escapeXml(title)}</text><text>${escapeXml(body)}</text></binding></visual>${windowsAudioNode(sound)}</toast>`
   const encoded = Buffer.from(xml, 'utf8').toString('base64')
+  const appIds = notifierAppIds
+    .map((id) => `'${id.replace(/'/g, "''")}'`)
+    .join(', ')
 
   const script = [
     "$bytes = [Convert]::FromBase64String('" + encoded + "')",
@@ -195,8 +151,11 @@ async function notifyWindows(
     '$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)',
     `$toast.Tag = '${toastTag}'`,
     `$toast.Group = '${toastGroup}'`,
+    `$appIds = @(${appIds})`,
     '$shown = $false',
-    'try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier().Show($toast); $shown = $true } catch {}',
+    // Some AUMIDs throw but still post the toast; treat "posted" errors as success.
+    'foreach ($appId in $appIds) { if ($shown) { break }; try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast); $shown = $true } catch { $msg = $_.Exception.Message; if ($msg -match "posted" -or $msg -match "publish" -or $msg -match "发布") { $shown = $true } } }',
+    'if (-not $shown) { try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier().Show($toast); $shown = $true } catch {} }',
     "if (-not $shown) { throw 'ToastNotificationManager failed to show toast' }",
   ].join('; ')
 
@@ -224,8 +183,7 @@ async function notifyMac(
 
   const notifierArgs = ['-title', title, '-message', body, '-group', group]
   if (sound !== false) notifierArgs.push('-sound', mapped || 'default')
-  // Best-effort focus of an existing terminal/editor instance. If nothing is running, no-op.
-  notifierArgs.push('-execute', macNoopOrActivateCommand())
+  // No click handler (no-op on click).
 
   const ok = await run('terminal-notifier', notifierArgs, { timeoutMs: 8000 })
   if (ok) return

@@ -1,6 +1,6 @@
 # Design: opencode-notify-native
 
-As-of: 2026-03-02
+As-of: 2026-03-03
 
 ## Product decision
 
@@ -9,6 +9,12 @@ This repository targets a single architecture:
 - OpenCode plugin sends native notifications directly.
 - No VS Code companion extension.
 - No queue/status bridge storage.
+
+## Repository layout
+
+- Repository root is the publishable npm package.
+- Runtime code lives in `src/` and builds to `dist/`.
+- Repository root also hosts documentation and CI workflows.
 
 ## OpenCode plugin runtime facts
 
@@ -44,13 +50,15 @@ Optional project override paths:
 
 - `<worktree>/notify-native.config.json`
 - `<worktree>/.opencode/notify-native.config.json`
+- `<directory>/notify-native.config.json` (when different from `worktree`)
+- `<directory>/.opencode/notify-native.config.json` (when different from `worktree`)
 
 Backward compatibility names still accepted:
 
 - `opencode-native-notify.config.json`
 - `opencode-notify.config.json`
 
-Resolution: layered merge (low -> high): global -> project root -> `.opencode` -> `OPENCODE_NOTIFY_NATIVE_CONFIG`.
+Resolution: layered merge (low -> high): global -> `<worktree>` -> `<directory>` -> `.opencode` under each -> `OPENCODE_NOTIFY_NATIVE_CONFIG`.
 
 - `enabled`
 - `events.complete|error|attention`

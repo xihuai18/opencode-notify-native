@@ -12,8 +12,8 @@ test('cooldown blocks repeated notifications', async () => {
   const dispatcher = new NotifyDispatcher({
     collapseWindowMs: 0,
     cooldownMs: 1000,
-    send: async (payload) => {
-      sent.push(payload)
+    send: async (payload, count) => {
+      sent.push({ payload, count })
     },
   })
 
@@ -42,6 +42,7 @@ test('cooldown blocks repeated notifications', async () => {
     await tick()
 
     assert.equal(sent.length, 1)
+    assert.equal(sent[0].count, 1)
 
     now += 1000
     dispatcher.enqueue({
@@ -55,18 +56,19 @@ test('cooldown blocks repeated notifications', async () => {
     await tick()
 
     assert.equal(sent.length, 2)
+    assert.equal(sent[1].count, 1)
   } finally {
     Date.now = realNow
   }
 })
 
-test('collapse window coalesces and annotates count', async () => {
+test('collapse window coalesces and reports count', async () => {
   const sent: any[] = []
   const dispatcher = new NotifyDispatcher({
     collapseWindowMs: 20,
     cooldownMs: 0,
-    send: async (payload) => {
-      sent.push(payload)
+    send: async (payload, count) => {
+      sent.push({ payload, count })
     },
   })
 
@@ -84,6 +86,7 @@ test('collapse window coalesces and annotates count', async () => {
   await new Promise((resolve) => setTimeout(resolve, 40))
 
   assert.equal(sent.length, 1)
-  assert.equal(sent[0].title, 't')
-  assert.match(sent[0].body, /\(x3\)\s*$/)
+  assert.equal(sent[0].payload.title, 't')
+  assert.equal(sent[0].payload.body, 'b')
+  assert.equal(sent[0].count, 3)
 })

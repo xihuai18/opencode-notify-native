@@ -18,13 +18,19 @@ type Pending = {
 type DispatcherInput = {
   collapseWindowMs: number
   cooldownMs: number
-  send: (payload: NotifyPayload) => Promise<void>
+  // `count` is the number of collapsed notifications (>= 1).
+  // Formatting/clamping is intentionally delegated to the caller so it can
+  // enforce config-driven limits (e.g. maxBodyLength) *after* collapse.
+  send: (payload: NotifyPayload, count: number) => Promise<void>
 }
 
 export class NotifyDispatcher {
   private readonly collapseWindowMs: number
   private readonly cooldownMs: number
-  private readonly send: (payload: NotifyPayload) => Promise<void>
+  private readonly send: (
+    payload: NotifyPayload,
+    count: number,
+  ) => Promise<void>
   private readonly pending = new Map<string, Pending>()
   private readonly lastSent = new Map<string, number>()
   private sendCounter = 0
@@ -81,16 +87,8 @@ export class NotifyDispatcher {
       this.pruneLastSent(now)
     }
 
-    const finalPayload =
-      count > 1
-        ? {
-            ...payload,
-            body: `${payload.body}\n(x${count})`,
-          }
-        : payload
-
     try {
-      await this.send(finalPayload)
+      await this.send(payload, count)
     } catch {
       // Notification failures should never break conversation flow.
     }

@@ -8,6 +8,13 @@ This repository maintains a single deliverable:
 
 The plugin sends native system notifications directly from OpenCode runtime events.
 
+Repository layout (authoritative):
+
+- repository root is the publishable package.
+- `src/` contains plugin source code.
+- `dist/` is generated build output.
+- repository root also contains docs and CI workflows.
+
 ## 2) Scope and non-goals
 
 In scope:
@@ -44,7 +51,9 @@ Config file path:
 - Global default: `~/.config/opencode/notify-native.config.json`
 - Project overrides:
   - `<worktree>/notify-native.config.json`
+  - `<directory>/notify-native.config.json` (when different from `worktree`)
   - `<worktree>/.opencode/notify-native.config.json`
+  - `<directory>/.opencode/notify-native.config.json` (when different from `worktree`)
 - Env override: `OPENCODE_NOTIFY_NATIVE_CONFIG=/absolute/path/to/config.json`
 
 Backward compatibility names still accepted:
@@ -52,7 +61,7 @@ Backward compatibility names still accepted:
 - `opencode-native-notify.config.json`
 - `opencode-notify.config.json`
 
-Resolution: layered merge (low -> high): global -> project root -> `.opencode` -> env override.
+Resolution: layered merge (low -> high): global -> `<worktree>` -> `<directory>` -> `.opencode` under each -> env override.
 
 Supported fields:
 
@@ -78,10 +87,10 @@ Supported fields:
 Local commands:
 
 ```bash
-npm install --prefix opencode-plugin
-npm run build --prefix opencode-plugin
-npm run typecheck --prefix opencode-plugin
-npm test --prefix opencode-plugin
+npm install
+npm run build
+npm run typecheck
+npm test
 ```
 
 Release pipeline:
@@ -92,7 +101,7 @@ Release pipeline:
 ## 7) Open-source readiness checklist
 
 - README reflects direct-only behavior and platform caveats.
-- `opencode-plugin/package.json` metadata matches current architecture.
+- `package.json` metadata matches current architecture.
 - No committed VSIX or extension artifacts.
 - No reserved-name junk files (`nul`, etc.).
 - Workflows do not publish VS Code extension artifacts.

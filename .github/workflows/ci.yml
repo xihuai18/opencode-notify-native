@@ -36,23 +36,22 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-          cache-dependency-path: opencode-plugin/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install plugin deps
-        run: npm ci --prefix opencode-plugin
+        run: npm ci
 
       - name: Build plugin
-        run: npm run build --prefix opencode-plugin
+        run: npm run build
 
       - name: Typecheck plugin
-        run: npm run typecheck --prefix opencode-plugin
+        run: npm run typecheck
 
       - name: Test plugin
-        run: npm test --prefix opencode-plugin
+        run: npm test
 
       - name: Pack plugin tarball
         if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == 20 }}
-        working-directory: opencode-plugin
         run: npm pack
 
       - name: Smoke test packed import
@@ -60,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          TGZ=$(ls opencode-plugin/*.tgz | head -n 1)
+          TGZ=$(ls *.tgz | head -n 1)
           TMP=$(mktemp -d)
           cp "$TGZ" "$TMP/pkg.tgz"
           cd "$TMP"
