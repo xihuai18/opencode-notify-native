@@ -143,8 +143,10 @@ Notes:
 ## Platform notes
 
 - Windows: notifications depend on system notification settings and Focus Assist.
-- macOS: tries `terminal-notifier` first (recommended), falls back to `osascript`. The `osascript` fallback cannot replace/group notifications at the OS level, so install `terminal-notifier` (for example `brew install terminal-notifier`) if you want best replacement behavior.
+- Windows sender label: defaults to Explorer to keep click behavior stable. Set `OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER=terminal` to prefer Windows Terminal app IDs.
+- macOS: uses `osascript` (`display notification`) only. This backend cannot replace/group notifications at the OS level.
 - Linux: requires `notify-send` (for example `libnotify-bin` on Debian/Ubuntu). `notify-send` has no standard sound support; this plugin can only best-effort play sounds when `canberra-gtk-play` is available.
+- Sender identity is platform-defined: macOS `osascript` does not support setting the sender to the current terminal, Windows sender is tied to the selected AUMID, and Linux can only provide a best-effort app name (`opencode`).
 
 ## Debugging
 
@@ -167,8 +169,12 @@ Implementation note:
 
 ## Click behavior
 
-- The plugin does not register any click action.
+- The plugin keeps click behavior as best-effort no-op.
+- The plugin does not register any custom click action.
+- On macOS `osascript`, custom click actions are not supported; click behavior is controlled by Notification Center and varies by system settings.
+- On Linux and Windows, click handling still depends on the OS notification service and cannot be guaranteed as strict no-op in every environment.
 - It is intentionally not designed to jump/focus the originating terminal/editor window.
+- If you opt into `OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER=terminal`, click behavior is still best-effort no-op but depends on Windows Terminal activation handling.
 
 ## Build and test
 
@@ -177,6 +183,12 @@ npm install
 npm run build
 npm run typecheck
 npm test
+```
+
+Optional local integration check on macOS (sends a real notification):
+
+```bash
+OC_NOTIFY_NATIVE_INTEGRATION=1 npm test
 ```
 
 ## Release
