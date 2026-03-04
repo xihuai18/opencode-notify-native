@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
 
 import { backendBackoffMs } from './backoff.js'
 import { debugWarn } from './debug.js'
@@ -50,84 +52,165 @@ function run(
   args: string[],
   options: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<boolean> {
-  return new Promise((resolve) => {
-    let child: ReturnType<typeof spawn>
-    try {
-      child = spawn(command, args, {
-        stdio: ['ignore', 'ignore', 'ignore'],
-        windowsHide: true,
-        env: options.env ? { ...process.env, ...options.env } : process.env,
-      })
-    } catch (error) {
-      visibleWarnOnce(
-        `spawn:${command}`,
-        `failed to start ${command}; native notifications may be unavailable`,
-      )
-      debugWarn(
-        `Failed to spawn ${command}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      )
-      resolve(false)
-      return
+  const env = options.env ? { ...process.env, ...options.env } : process.env
+  const isWindowsHost = delimiter === ';'
+
+  type RunResult = { ok: boolean; spawnErrorCode?: string }
+
+  const resolveNodeShim = (): string | undefined => {
+    if (!isWindowsHost) return undefined
+    if (!command || command.includes('\\') || command.includes('/')) {
+      return undefined
     }
-    // Best-effort: do not keep OpenCode running just to finish a notification.
-    child.unref?.()
+    const pathValue = env.PATH || ''
+    const pathEntries = pathValue
+      .split(delimiter)
+      .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+      .filter(Boolean)
 
-    let done = false
-    let exited = false
-    let hardKill: NodeJS.Timeout | undefined
-
-    const settle = (ok: boolean): void => {
-      if (done) return
-      done = true
-      resolve(ok)
+    for (const entry of pathEntries) {
+      const cmdPath = join(entry, `${command}.cmd`)
+      const jsPath = join(entry, `${command}.js`)
+      if (existsSync(cmdPath) && existsSync(jsPath)) return jsPath
     }
+    return undefined
+  }
 
-    const timer =
-      typeof options.timeoutMs === 'number' && options.timeoutMs > 0
-        ? setTimeout(() => {
-            if (done) return
-            try {
-              child.kill()
-            } catch (error) {
-              debugWarn(
-                `Failed to terminate process ${command}: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              )
-            }
-            hardKill = setTimeout(() => {
-              if (exited || child.exitCode !== null) return
+  const runAttempt = (
+    spawnCommand: string,
+    spawnArgs: string[],
+  ): Promise<RunResult> =>
+    new Promise((resolve) => {
+      let child: ReturnType<typeof spawn>
+      try {
+        child = spawn(spawnCommand, spawnArgs, {
+          stdio: ['ignore', 'ignore', 'ignore'],
+          windowsHide: true,
+          env,
+        })
+      } catch (error) {
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String((error as { code?: unknown }).code || '')
+            : ''
+        resolve({ ok: false, spawnErrorCode: code || undefined })
+        return
+      }
+      // Best-effort: do not keep OpenCode running just to finish a notification.
+      child.unref?.()
+
+      let done = false
+      let exited = false
+      let hardKill: NodeJS.Timeout | undefined
+
+      const settle = (result: RunResult): void => {
+        if (done) return
+        done = true
+        resolve(result)
+      }
+
+      const timer =
+        typeof options.timeoutMs === 'number' && options.timeoutMs > 0
+          ? setTimeout(() => {
+              if (done) return
               try {
-                child.kill('SIGKILL')
+                child.kill()
               } catch (error) {
                 debugWarn(
-                  `Failed to force-kill process ${command}: ${
+                  `Failed to terminate process ${command}: ${
                     error instanceof Error ? error.message : String(error)
                   }`,
                 )
               }
-            }, 250)
-            hardKill.unref?.()
-            settle(false)
-          }, options.timeoutMs)
-        : undefined
+              hardKill = setTimeout(() => {
+                if (exited || child.exitCode !== null) return
+                try {
+                  child.kill('SIGKILL')
+                } catch (error) {
+                  debugWarn(
+                    `Failed to force-kill process ${command}: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  )
+                }
+              }, 250)
+              hardKill.unref?.()
+              settle({ ok: false })
+            }, options.timeoutMs)
+          : undefined
 
-    timer?.unref?.()
+      timer?.unref?.()
 
-    child.on('error', () => {
-      exited = true
-      if (timer) clearTimeout(timer)
-      if (hardKill) clearTimeout(hardKill)
-      settle(false)
+      child.on('error', (error) => {
+        exited = true
+        if (timer) clearTimeout(timer)
+        if (hardKill) clearTimeout(hardKill)
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String((error as { code?: unknown }).code || '')
+            : ''
+        settle({ ok: false, spawnErrorCode: code || undefined })
+      })
+      child.on('close', (code) => {
+        exited = true
+        if (timer) clearTimeout(timer)
+        if (hardKill) clearTimeout(hardKill)
+        settle({ ok: code === 0 })
+      })
     })
-    child.on('close', (code) => {
-      exited = true
-      if (timer) clearTimeout(timer)
-      if (hardKill) clearTimeout(hardKill)
-      settle(code === 0)
-    })
+
+  return runAttempt(command, args).then(async (first) => {
+    if (first.ok) return true
+    const shouldRetryWithShell =
+      isWindowsHost &&
+      !command.includes('\\') &&
+      !command.includes('/') &&
+      (first.spawnErrorCode === 'ENOENT' || first.spawnErrorCode === 'EINVAL')
+
+    if (!shouldRetryWithShell) {
+      if (first.spawnErrorCode) {
+        visibleWarnOnce(
+          `spawn:${command}`,
+          `failed to start ${command}; native notifications may be unavailable`,
+        )
+      }
+      return false
+    }
+
+    const nodeShim = resolveNodeShim()
+    if (nodeShim) {
+      const shimResult = await runAttempt(process.execPath, [
+        nodeShim,
+        command,
+        ...args,
+      ])
+      if (!shimResult.spawnErrorCode) return shimResult.ok
+      visibleWarnOnce(
+        `spawn:${command}`,
+        `failed to start ${command}; native notifications may be unavailable`,
+      )
+    }
+
+    const cmdFallbackCommand =
+      command.includes('.') || command.includes('\\') || command.includes('/')
+        ? command
+        : `${command}.cmd`
+
+    const second = await runAttempt(env.ComSpec || 'cmd.exe', [
+      '/d',
+      '/s',
+      '/c',
+      cmdFallbackCommand,
+      ...args,
+    ])
+    if (second.ok) return true
+    if (second.spawnErrorCode) {
+      visibleWarnOnce(
+        `spawn:${command}`,
+        `failed to start ${command}; native notifications may be unavailable`,
+      )
+    }
+    return false
   })
 }
 
