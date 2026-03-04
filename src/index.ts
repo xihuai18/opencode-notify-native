@@ -50,6 +50,10 @@ function eventSound(
 function extractEventPayload(payload: unknown): unknown | null {
   if (!payload || typeof payload !== 'object') return null
   const value = payload as { event?: unknown; type?: unknown }
+  if (value.event && typeof value.event === 'object') {
+    const nested = value.event as { type?: unknown }
+    if (typeof nested.type === 'string') return value.event
+  }
   if (typeof value.type === 'string') return payload
   if ('event' in value) return value.event
   return null

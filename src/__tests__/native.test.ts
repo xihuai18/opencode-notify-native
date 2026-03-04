@@ -19,10 +19,12 @@ import {
   windowsAudioNode,
 } from "../native.js";
 
-const shellWrapper = '#!/bin/sh\nexec node "$0.js" "$(basename "$0")" "$@"\n';
-const cmdWrapper = '@echo off\r\nnode "%~dpn0.js" "%~n0" %*\r\n';
-
 async function writeWrappedCommand(tmp: string, name: string, script: string) {
+  const nodePathForShell = process.execPath.replace(/"/g, '\\"');
+  const nodePathForCmd = process.execPath.replace(/"/g, '""');
+  const shellWrapper = `#!/bin/sh\nname=\${0##*/}\nexec "${nodePathForShell}" "$0.js" "$name" "$@"\n`;
+  const cmdWrapper = `@echo off\r\n"${nodePathForCmd}" "%~dpn0.js" "%~n0" %*\r\n`;
+
   await writeFile(path.join(tmp, `${name}.js`), script, "utf8");
   const shellPath = path.join(tmp, name);
   await writeFile(shellPath, shellWrapper, "utf8");
@@ -168,7 +170,7 @@ async function setupMacEnv(
   const prevOsa = process.env.OC_TEST_OSASCRIPT_OK;
   const prevPlatform = process.platform;
 
-  process.env.PATH = `${binDir}${path.delimiter}${prevPath || ""}`;
+  process.env.PATH = binDir;
   process.env.OC_TEST_NOTIFY_LOG = logFile;
   process.env.OC_TEST_TERMINAL_NOTIFIER_OK = options.terminalNotifierOk;
   process.env.OC_TEST_OSASCRIPT_OK = options.osascriptOk;
@@ -201,7 +203,7 @@ async function setupLinuxEnv(
   const prevCanberra = process.env.OC_TEST_CANBERRA_OK;
   const prevPlatform = process.platform;
 
-  process.env.PATH = `${binDir}${path.delimiter}${prevPath || ""}`;
+  process.env.PATH = binDir;
   process.env.OC_TEST_NOTIFY_LOG = logFile;
   process.env.OC_TEST_NOTIFY_SEND_OK = options.notifySendOk;
   process.env.OC_TEST_CANBERRA_OK = options.canberraOk;
@@ -235,7 +237,7 @@ async function setupWindowsEnv(
   const prevPowerShell = process.env.OC_TEST_POWERSHELL_OK;
   const prevPlatform = process.platform;
 
-  process.env.PATH = `${binDir}${path.delimiter}${prevPath || ""}`;
+  process.env.PATH = binDir;
   process.env.OC_TEST_NOTIFY_LOG = logFile;
   process.env.OC_TEST_PWSH_OK = options.pwshOk;
   process.env.OC_TEST_POWERSHELL_OK = options.powershellOk;
@@ -361,6 +363,46 @@ test(
       const log = await readLog(logFile);
       assert.equal(log.length, 1);
       assert.equal(log[0].cmd, "pwsh");
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
+
+test(
+  "windows notifier prefers powershell when pwsh is missing",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeWindowsCommands(binDir);
+    await Promise.allSettled([
+      unlink(path.join(binDir, "pwsh")),
+      unlink(path.join(binDir, "pwsh.cmd")),
+    ]);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupWindowsEnv(binDir, logFile, {
+      pwshOk: "0",
+      powershellOk: "1",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "complete",
+          sound: true,
+          group: "windows-missing-pwsh",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 1);
+      assert.equal(log[0].cmd, "powershell");
     } finally {
       restore();
       await cleanupTmpDir(binDir);
@@ -574,6 +616,7 @@ test(
       assert.equal(log[1].cmd, "notify-send");
       assert.equal(log[1].mode, "short");
       assert.ok(log[1].args.includes("--"));
+      assert.ok(!log[1].args.includes("-h"));
     } finally {
       restore();
       await cleanupTmpDir(binDir);
@@ -614,6 +657,7 @@ test(
         ["long", "short", "plain"],
       );
       assert.ok(log[2].args.includes("--"));
+      assert.ok(!log[2].args.includes("-h"));
     } finally {
       restore();
       await cleanupTmpDir(binDir);

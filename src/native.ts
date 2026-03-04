@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { accessSync, constants } from 'node:fs'
+import path from 'node:path'
 
 import { backendBackoffMs } from './backoff.js'
 import { debugEnabled, debugWarn } from './debug.js'
@@ -43,6 +45,42 @@ function hashHex(input: string, length: number): string {
     .update(input, 'utf8')
     .digest('hex')
     .slice(0, length)
+}
+
+function commandInPath(command: string, env: NodeJS.ProcessEnv): boolean {
+  const pathValue = env.PATH || env.Path || ''
+  if (!pathValue) return false
+
+  const dirs = pathValue
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  if (!dirs.length) return false
+
+  const names = [command]
+  if (process.platform === 'win32' && !path.extname(command)) {
+    const extList = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+      .split(';')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+    for (const ext of extList) {
+      const normalized = ext.startsWith('.') ? ext : `.${ext}`
+      names.push(`${command}${normalized.toLowerCase()}`)
+      names.push(`${command}${normalized.toUpperCase()}`)
+    }
+  }
+
+  for (const dir of dirs) {
+    for (const name of names) {
+      try {
+        accessSync(path.join(dir, name), constants.F_OK)
+        return true
+      } catch {
+        // Continue searching PATH.
+      }
+    }
+  }
+  return false
 }
 
 function run(
@@ -301,9 +339,19 @@ async function notifyWindows(
     '-Command',
     script,
   ]
-  const primary = state.windowsPreferredShell || 'pwsh'
-  const secondary = primary === 'pwsh' ? 'powershell' : 'pwsh'
-  const shells: Array<'pwsh' | 'powershell'> = [primary, secondary]
+  const shells: Array<'pwsh' | 'powershell'> = state.windowsPreferredShell
+    ? [
+        state.windowsPreferredShell,
+        state.windowsPreferredShell === 'pwsh' ? 'powershell' : 'pwsh',
+      ]
+    : (() => {
+        const hasPwsh = commandInPath('pwsh', process.env)
+        const hasPowershell = commandInPath('powershell', process.env)
+        if (hasPwsh && hasPowershell) return ['pwsh', 'powershell']
+        if (hasPwsh) return ['pwsh']
+        if (hasPowershell) return ['powershell']
+        return ['pwsh', 'powershell']
+      })()
 
   let ok = false
   for (const shell of shells) {
@@ -361,6 +409,10 @@ async function notifyMac(
   ].join('\n')
 
   if (!ok) {
+    visibleWarnOnce(
+      'mac:osascript-fallback',
+      'terminal-notifier unavailable; osascript fallback cannot group/replace notifications',
+    )
     // `system attribute` decodes UTF-8 environment values incorrectly on many
     // macOS setups. Pass user text via argv to preserve Unicode.
     ok = await run(
@@ -417,9 +469,20 @@ async function notifyLinux(
   ]
 
   // Some notify-send builds only support a subset of replacement flags.
-  const shortArgs = [...args]
-  const replaceIdx = shortArgs.findIndex((x) => x.startsWith('--replace-id='))
-  if (replaceIdx >= 0) shortArgs.splice(replaceIdx, 1, '-r', String(replaceId))
+  // Keep short mode free of custom hints so it works on stricter variants.
+  const shortArgs = [
+    '-a',
+    'opencode',
+    '-u',
+    urgency,
+    '-t',
+    String(timeoutMs),
+    '-r',
+    String(replaceId),
+    '--',
+    safeTitle,
+    safeBody,
+  ]
   const plainArgs = [
     '-a',
     'opencode',
