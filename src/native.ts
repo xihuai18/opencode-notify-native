@@ -323,12 +323,25 @@ async function notifyMac(
 
   let ok = await run('terminal-notifier', notifierArgs, { timeoutMs: 8000 })
 
-  const script =
-    'set t to "" ; set b to "" ; set s to "" ; ' +
-    'try ; set t to system attribute "OC_NOTIFY_TITLE" ; end try ; ' +
-    'try ; set b to system attribute "OC_NOTIFY_BODY" ; end try ; ' +
-    'try ; set s to system attribute "OC_NOTIFY_SOUND" ; end try ; ' +
-    'if s is not "" then display notification b with title t sound name s else display notification b with title t end if'
+  const script = [
+    'set t to ""',
+    'set b to ""',
+    'set s to ""',
+    'try',
+    '  set t to system attribute "OC_NOTIFY_TITLE"',
+    'end try',
+    'try',
+    '  set b to system attribute "OC_NOTIFY_BODY"',
+    'end try',
+    'try',
+    '  set s to system attribute "OC_NOTIFY_SOUND"',
+    'end try',
+    'if s is not "" then',
+    '  display notification b with title t sound name s',
+    'else',
+    '  display notification b with title t',
+    'end if',
+  ].join('\n')
 
   if (!ok) {
     ok = await run('osascript', ['-e', script], {
