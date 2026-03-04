@@ -47,6 +47,14 @@ function eventSound(
   return config.soundByEvent.attention
 }
 
+function extractEventPayload(payload: unknown): unknown | null {
+  if (!payload || typeof payload !== 'object') return null
+  const value = payload as { event?: unknown; type?: unknown }
+  if (typeof value.type === 'string') return payload
+  if ('event' in value) return value.event
+  return null
+}
+
 function makeBody(input: {
   sessionID?: string
   event: NotifyEventType
@@ -180,27 +188,24 @@ export function createOpenCodeNotifyPlugin(
       event: (payload) => {
         const done = Promise.resolve()
         try {
-          if (
-            !payload ||
-            typeof payload !== 'object' ||
-            !('event' in payload)
-          ) {
+          const eventPayload = extractEventPayload(payload)
+          if (!eventPayload) {
             debugWarn('event hook received malformed payload')
             return done
           }
-          const classified = classifyEvent(
-            (payload as { event: unknown }).event,
-          )
+
+          const classified = classifyEvent(eventPayload)
           if (!classified) {
-            const maybeEvent = (payload as { event: unknown }).event
             if (
               debugEnabled() &&
-              maybeEvent &&
-              typeof maybeEvent === 'object' &&
-              'type' in maybeEvent &&
-              typeof (maybeEvent as { type: unknown }).type === 'string'
+              eventPayload &&
+              typeof eventPayload === 'object' &&
+              'type' in eventPayload &&
+              typeof (eventPayload as { type: unknown }).type === 'string'
             ) {
-              const eventType = String((maybeEvent as { type: string }).type)
+              const eventType = String(
+                (eventPayload as { type: string }).type,
+              )
               if (
                 !unknownEventTypesSeen.has(eventType) &&
                 unknownEventTypesSeen.size < 64

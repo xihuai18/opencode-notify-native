@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 
 import { backendBackoffMs } from './backoff.js'
-import { debugWarn } from './debug.js'
+import { debugEnabled, debugWarn } from './debug.js'
 import { fnv1a32 } from './hash.js'
 import type { NotifyEventType, NotifySound } from './types.js'
 
@@ -51,10 +51,12 @@ function run(
   options: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<boolean> {
   return new Promise((resolve) => {
+    const captureStderr = debugEnabled()
     let child: ReturnType<typeof spawn>
+    let stderrOutput = ''
     try {
       child = spawn(command, args, {
-        stdio: ['ignore', 'ignore', 'ignore'],
+        stdio: ['ignore', 'ignore', captureStderr ? 'pipe' : 'ignore'],
         windowsHide: true,
         env: options.env ? { ...process.env, ...options.env } : process.env,
       })
@@ -73,6 +75,13 @@ function run(
     }
     // Best-effort: do not keep OpenCode running just to finish a notification.
     child.unref?.()
+
+    if (captureStderr && child.stderr) {
+      child.stderr.on('data', (chunk) => {
+        if (stderrOutput.length >= 4096) return
+        stderrOutput += String(chunk)
+      })
+    }
 
     let done = false
     let exited = false
@@ -116,16 +125,25 @@ function run(
 
     timer?.unref?.()
 
+    const logStderrIfAny = (): void => {
+      if (!captureStderr) return
+      const message = stderrOutput.trim()
+      if (!message) return
+      debugWarn(`${command} stderr: ${message.slice(0, 2048)}`)
+    }
+
     child.on('error', () => {
       exited = true
       if (timer) clearTimeout(timer)
       if (hardKill) clearTimeout(hardKill)
+      logStderrIfAny()
       settle(false)
     })
     child.on('close', (code) => {
       exited = true
       if (timer) clearTimeout(timer)
       if (hardKill) clearTimeout(hardKill)
+      if (code !== 0) logStderrIfAny()
       settle(code === 0)
     })
   })
@@ -148,7 +166,7 @@ function normalizeSound(
 type BackendState = {
   linuxNotifySendDisabledUntil: number
   linuxNotifySendFailures: number
-  linuxNotifySendMode: 'auto' | 'long' | 'short' | 'plain'
+  linuxNotifySendMode: 'auto' | 'long' | 'short' | 'plain' | 'minimal'
   windowsNotifyDisabledUntil: number
   windowsNotifyFailures: number
   windowsPreferredShell: '' | 'pwsh' | 'powershell'
@@ -262,13 +280,16 @@ async function notifyWindows(
     '$xml = New-Object Windows.Data.Xml.Dom.XmlDocument',
     '$xml.LoadXml($xmlString)',
     '$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)',
-    `$toast.Tag = '${toastTag}'`,
-    `$toast.Group = '${toastGroup}'`,
+    `$toastTag = '${toastTag}'`,
+    `$toastGroup = '${toastGroup}'`,
+    '$toast.Tag = $toastTag',
+    '$toast.Group = $toastGroup',
     `$appIds = @(${appIds})`,
     '$shown = $false',
-    // Some AUMIDs throw but still post the toast; treat "posted" errors as success.
-    'foreach ($appId in $appIds) { if ($shown) { break }; try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast); $shown = $true } catch { $msg = $_.Exception.Message; if ($msg -match "posted" -or $msg -match "publish" -or $msg -match "发布") { $shown = $true } } }',
-    'if (-not $shown) { try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier().Show($toast); $shown = $true } catch {} }',
+    // Some AUMIDs can throw after posting. Check history by tag/group to avoid
+    // locale-dependent parsing of exception text.
+    'foreach ($appId in $appIds) { if ($shown) { break }; try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast); $shown = $true } catch { try { $history = [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory($appId); foreach ($item in $history) { if ($item.Tag -eq $toastTag -and $item.Group -eq $toastGroup) { $shown = $true; break } } } catch {} } }',
+    'if (-not $shown) { try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier().Show($toast); $shown = $true } catch { try { $history = [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory(); foreach ($item in $history) { if ($item.Tag -eq $toastTag -and $item.Group -eq $toastGroup) { $shown = $true; break } } } catch {} } }',
     "if (-not $shown) { throw 'ToastNotificationManager failed to show toast' }",
   ].join('; ')
 
@@ -390,6 +411,7 @@ async function notifyLinux(
     `string:x-canonical-private-synchronous:opencode-${replaceId}`,
     '-h',
     `string:x-dunst-stack-tag:opencode-${replaceId}`,
+    '--',
     safeTitle,
     safeBody,
   ]
@@ -405,20 +427,24 @@ async function notifyLinux(
     urgency,
     '-t',
     String(timeoutMs),
+    '--',
     safeTitle,
     safeBody,
   ]
+  const minimalArgs = [safeTitle, safeBody]
 
   const modeArgs = {
     long: args,
     short: shortArgs,
     plain: plainArgs,
+    minimal: minimalArgs,
   }
 
-  const fallbackModes: Array<'long' | 'short' | 'plain'> = [
+  const fallbackModes: Array<'long' | 'short' | 'plain' | 'minimal'> = [
     'long',
     'short',
     'plain',
+    'minimal',
   ]
   const modes =
     state.linuxNotifySendMode === 'auto'

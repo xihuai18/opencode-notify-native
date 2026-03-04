@@ -66,7 +66,9 @@ let mode = ''
 if (cmd === 'notify-send') {
   if (args.some((arg) => arg.startsWith('--replace-id='))) mode = 'long'
   else if (args.includes('-r')) mode = 'short'
-  else mode = 'plain'
+  else if (args.includes('-a') || args.includes('-u') || args.includes('-t'))
+    mode = 'plain'
+  else mode = 'minimal'
 }
 
 appendFileSync(
@@ -91,6 +93,29 @@ process.exit(1)
 
   await writeWrappedCommand(tmp, "notify-send", recorder);
   await writeWrappedCommand(tmp, "canberra-gtk-play", recorder);
+}
+
+async function createFakeWindowsCommands(tmp: string): Promise<void> {
+  const recorder = `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs')
+const cmd = process.argv[2]
+const args = process.argv.slice(3)
+
+appendFileSync(process.env.OC_TEST_NOTIFY_LOG, JSON.stringify({ cmd, args }) + '\\n')
+
+if (cmd === 'pwsh') {
+  process.exit(process.env.OC_TEST_PWSH_OK === '1' ? 0 : 1)
+}
+
+if (cmd === 'powershell') {
+  process.exit(process.env.OC_TEST_POWERSHELL_OK === '1' ? 0 : 1)
+}
+
+process.exit(1)
+`;
+
+  await writeWrappedCommand(tmp, "pwsh", recorder);
+  await writeWrappedCommand(tmp, "powershell", recorder);
 }
 
 async function readLog(file: string): Promise<any[]> {
@@ -196,6 +221,39 @@ async function setupLinuxEnv(
   };
 }
 
+async function setupWindowsEnv(
+  binDir: string,
+  logFile: string,
+  options: {
+    pwshOk: "0" | "1";
+    powershellOk: "0" | "1";
+  },
+): Promise<() => void> {
+  const prevPath = process.env.PATH;
+  const prevLog = process.env.OC_TEST_NOTIFY_LOG;
+  const prevPwsh = process.env.OC_TEST_PWSH_OK;
+  const prevPowerShell = process.env.OC_TEST_POWERSHELL_OK;
+  const prevPlatform = process.platform;
+
+  process.env.PATH = `${binDir}${path.delimiter}${prevPath || ""}`;
+  process.env.OC_TEST_NOTIFY_LOG = logFile;
+  process.env.OC_TEST_PWSH_OK = options.pwshOk;
+  process.env.OC_TEST_POWERSHELL_OK = options.powershellOk;
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  return () => {
+    Object.defineProperty(process, "platform", { value: prevPlatform });
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
+    if (prevLog === undefined) delete process.env.OC_TEST_NOTIFY_LOG;
+    else process.env.OC_TEST_NOTIFY_LOG = prevLog;
+    if (prevPwsh === undefined) delete process.env.OC_TEST_PWSH_OK;
+    else process.env.OC_TEST_PWSH_OK = prevPwsh;
+    if (prevPowerShell === undefined) delete process.env.OC_TEST_POWERSHELL_OK;
+    else process.env.OC_TEST_POWERSHELL_OK = prevPowerShell;
+  };
+}
+
 test("escapeXml escapes XML special characters", () => {
   const input = `a&b<c>d"e'f`;
   const out = escapeXml(input);
@@ -228,6 +286,87 @@ test("macSoundName maps boolean and named sounds", () => {
   assert.equal(macSoundName("complete", "error"), "Basso");
   assert.equal(macSoundName("complete", "Ping"), "Ping");
 });
+
+test(
+  "windows notifier falls back from pwsh to powershell",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeWindowsCommands(binDir);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupWindowsEnv(binDir, logFile, {
+      pwshOk: "0",
+      powershellOk: "1",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "attention",
+          sound: true,
+          group: "windows-fallback",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 2);
+      assert.equal(log[0].cmd, "pwsh");
+      assert.equal(log[1].cmd, "powershell");
+
+      const commandIdx = log[1].args.indexOf("-Command");
+      assert.ok(commandIdx >= 0);
+      const script = String(log[1].args[commandIdx + 1] || "");
+      assert.match(script, /History\.GetHistory/);
+      assert.doesNotMatch(script, /-match \"posted\"/);
+      assert.doesNotMatch(script, /-match \"publish\"/);
+      assert.doesNotMatch(script, /发布/);
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
+
+test(
+  "windows notifier uses pwsh when available",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeWindowsCommands(binDir);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupWindowsEnv(binDir, logFile, {
+      pwshOk: "1",
+      powershellOk: "1",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "complete",
+          sound: true,
+          group: "windows-primary",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 1);
+      assert.equal(log[0].cmd, "pwsh");
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
 
 test(
   "darwin notifier uses terminal-notifier when available",
@@ -431,8 +570,10 @@ test(
       assert.equal(log.length, 2);
       assert.equal(log[0].cmd, "notify-send");
       assert.equal(log[0].mode, "long");
+      assert.ok(log[0].args.includes("--"));
       assert.equal(log[1].cmd, "notify-send");
       assert.equal(log[1].mode, "short");
+      assert.ok(log[1].args.includes("--"));
     } finally {
       restore();
       await cleanupTmpDir(binDir);
@@ -472,6 +613,48 @@ test(
         log.map((entry) => entry.mode),
         ["long", "short", "plain"],
       );
+      assert.ok(log[2].args.includes("--"));
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
+
+test(
+  "linux notifier falls back to minimal mode",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeLinuxCommands(binDir);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupLinuxEnv(binDir, logFile, {
+      notifySendOk: "minimal",
+      canberraOk: "1",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "complete",
+          sound: false,
+          group: "linux-group-minimal",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 4);
+      assert.deepEqual(
+        log.map((entry) => entry.mode),
+        ["long", "short", "plain", "minimal"],
+      );
+      assert.ok(!log[3].args.includes("--"));
+      assert.deepEqual(log[3].args, ["Title", "Body"]);
     } finally {
       restore();
       await cleanupTmpDir(binDir);
@@ -554,10 +737,10 @@ test(
       assert.equal(second, false);
 
       const log = await readLog(logFile);
-      assert.equal(log.length, 3);
+      assert.equal(log.length, 4);
       assert.deepEqual(
         log.map((entry) => entry.mode),
-        ["long", "short", "plain"],
+        ["long", "short", "plain", "minimal"],
       );
     } finally {
       restore();

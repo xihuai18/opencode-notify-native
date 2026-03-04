@@ -26,6 +26,21 @@ function attentionKey(
   return { collapseKey: `${base}:${tag}`, topicKey: tag }
 }
 
+function firstString(
+  input: Record<string, unknown>,
+  keys: string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = input[key]
+    if (typeof value === 'string') return value
+  }
+  return undefined
+}
+
+function readSessionID(properties: Record<string, unknown>): string | undefined {
+  return firstString(properties, ['sessionID', 'sessionId'])
+}
+
 export function createEventClassifier(): (
   event: unknown,
 ) => ClassifiedEvent | null {
@@ -107,23 +122,25 @@ export function createEventClassifier(): (
     if (!isRecord(event.properties)) return
 
     const info = isRecord(event.properties.info) ? event.properties.info : null
-    if (!info || typeof info.id !== 'string') return
-    touchSession(info.id)
+    if (!info) return
+
+    const sessionID = firstString(info, ['id', 'sessionID', 'sessionId'])
+    if (!sessionID) return
+    touchSession(sessionID)
 
     if (event.type === 'session.deleted') {
-      evictSession(info.id)
+      evictSession(sessionID)
       return
     }
 
-    const parentID =
-      typeof info.parentID === 'string' ? info.parentID.trim() : ''
-    if (parentID) subagentSessions.add(info.id)
-    else subagentSessions.delete(info.id)
+    const parentID = firstString(info, ['parentID', 'parentId'])?.trim() || ''
+    if (parentID) subagentSessions.add(sessionID)
+    else subagentSessions.delete(sessionID)
 
     if (typeof info.title === 'string') {
       const title = info.title.trim()
-      if (title) sessionTitleBySession.set(info.id, title)
-      else sessionTitleBySession.delete(info.id)
+      if (title) sessionTitleBySession.set(sessionID, title)
+      else sessionTitleBySession.delete(sessionID)
     }
   }
 
@@ -134,10 +151,7 @@ export function createEventClassifier(): (
       ? event.properties.status
       : null
     if (!status || status.type !== 'idle') return null
-    const sessionID =
-      typeof event.properties.sessionID === 'string'
-        ? event.properties.sessionID
-        : undefined
+    const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
 
@@ -155,10 +169,7 @@ export function createEventClassifier(): (
   function classifySessionIdle(event: RawEvent): ClassifiedEvent | null {
     if (event.type !== 'session.idle') return null
     if (!isRecord(event.properties)) return null
-    const sessionID =
-      typeof event.properties.sessionID === 'string'
-        ? event.properties.sessionID
-        : undefined
+    const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
     if (recentlySawIdleStatus(sessionID)) return null
@@ -183,10 +194,7 @@ export function createEventClassifier(): (
         : ''
     if (name === 'MessageAbortedError') return null
 
-    const sessionID =
-      typeof event.properties.sessionID === 'string'
-        ? event.properties.sessionID
-        : undefined
+    const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
     return {
@@ -224,10 +232,7 @@ export function createEventClassifier(): (
       return null
     }
 
-    const sessionID =
-      typeof event.properties.sessionID === 'string'
-        ? event.properties.sessionID
-        : undefined
+    const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
 
@@ -280,10 +285,7 @@ export function createEventClassifier(): (
     if (event.type !== 'question.asked') return null
     if (!isRecord(event.properties)) return null
 
-    const sessionID =
-      typeof event.properties.sessionID === 'string'
-        ? event.properties.sessionID
-        : undefined
+    const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
     const firstQuestion = Array.isArray(event.properties.questions)

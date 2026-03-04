@@ -64,6 +64,46 @@ test('plugin wires event -> classify -> dispatch -> native send', async () => {
   assert.match(calls[0].body, /\n\(x3\)$/)
 })
 
+test('plugin accepts raw event payload shape', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  await writeFile(
+    path.join(root, 'notify-native.config.json'),
+    JSON.stringify({
+      enabled: true,
+      sanitize: true,
+      collapseWindowMs: 0,
+      cooldownMs: 0,
+      showDirectory: false,
+      showSessionId: false,
+    }),
+    'utf8',
+  )
+
+  const calls: any[] = []
+  const plugin = createOpenCodeNotifyPlugin({
+    notifyNative: async (input) => {
+      calls.push(input)
+      return true
+    },
+  })
+
+  const hooks = await plugin({ worktree: root, directory: root } as any)
+  assert.ok(typeof hooks.event === 'function')
+
+  await hooks.event!({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_raw_payload',
+      status: { type: 'idle' },
+    },
+  } as any)
+
+  await tick(20)
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].event, 'complete')
+})
+
 test('title prefers session title when available', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
   await writeFile(

@@ -124,6 +124,19 @@ test('loadPluginConfig ignores invalid JSON (fail closed)', async () => {
   }
 })
 
+test('loadPluginConfig accepts UTF-8 BOM config', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  await writeFile(
+    path.join(root, 'notify-native.config.json'),
+    '\uFEFF{"showDirectory": true, "showSessionId": true}',
+    'utf8',
+  )
+
+  const config = await loadPluginConfig(root, root)
+  assert.equal(config.showDirectory, true)
+  assert.equal(config.showSessionId, true)
+})
+
 test('defaultPluginConfig returns a deep copy', () => {
   const a = defaultPluginConfig()
   const b = defaultPluginConfig()

@@ -162,7 +162,8 @@ function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
 
 async function readConfigFile(filePath: string): Promise<unknown> {
   const content = await readFile(filePath, 'utf8')
-  return JSON.parse(content)
+  const withoutBom = content.replace(/^\uFEFF/, '')
+  return JSON.parse(withoutBom)
 }
 
 function resolveConfigDir(): string {
