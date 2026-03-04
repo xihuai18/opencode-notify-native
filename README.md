@@ -24,6 +24,15 @@ Direct native notification plugin for OpenCode.
 - Notification anti-spam controls (collapse + cooldown)
 - Basic text sanitization and truncation
 
+## Notification signal policy
+
+- Notify only terminal, user-actionable events.
+- Do not notify non-terminal progress states (for example `running`, `thinking`, `retrying`, `progress`).
+- User-initiated interrupt/cancel/abort flows are treated as no-notify outcomes.
+- Short idle transitions right after cancel/error signals are suppressed to reduce false "Completed" or "Error + Completed" noise.
+- Terminal `permission.updated` / `question.updated` replies are suppressed; only unresolved prompts notify as attention.
+- When event semantics are unclear, the plugin prefers no-notify and relies on debug logs for observation.
+
 ## Runtime compatibility
 
 - This package is ESM-only (`"type": "module"`).

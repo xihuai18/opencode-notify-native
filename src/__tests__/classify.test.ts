@@ -122,6 +122,32 @@ test('classify complete from legacy session.idle', () => {
   assert.equal(classified?.event, 'complete')
 })
 
+test('do not classify idle with cancelled reason as complete', () => {
+  const classifyEvent = createEventClassifier()
+  const classified = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_reason_cancel',
+      status: { type: 'idle', reason: 'cancelled' },
+    },
+  } as any)
+
+  assert.equal(classified, null)
+})
+
+test('do not classify idle with interrupted flag as complete', () => {
+  const classifyEvent = createEventClassifier()
+  const classified = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_flag_interrupt',
+      status: { type: 'idle', interrupted: true },
+    },
+  } as any)
+
+  assert.equal(classified, null)
+})
+
 test('classify attention from permission.asked', () => {
   const classifyEvent = createEventClassifier()
   const event = {
@@ -205,6 +231,22 @@ test('ignore permission.updated when reply contains terminal value', () => {
   assert.equal(classified, null)
 })
 
+test('ignore permission.updated when status is resolved', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'permission.updated',
+    properties: {
+      sessionID: 'ses_legacy_perm_resolved',
+      type: 'bash',
+      pattern: 'git status',
+      status: 'resolved',
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.equal(classified, null)
+})
+
 test('do not ignore permission.updated when response is false', () => {
   const classifyEvent = createEventClassifier()
   const event = {
@@ -242,6 +284,38 @@ test('classify attention from question.asked', () => {
   assert.ok(classified)
   assert.equal(classified?.event, 'attention')
   assert.match(classified?.summary || '', /Confirm action/)
+})
+
+test('classify attention from question.updated when unresolved', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'question.updated',
+    properties: {
+      sessionID: 'ses_q_updated',
+      state: 'pending',
+      questions: [{ header: 'Pick one option' }],
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.ok(classified)
+  assert.equal(classified?.event, 'attention')
+  assert.match(classified?.summary || '', /Pick one option/)
+})
+
+test('ignore question.updated when answer is present', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'question.updated',
+    properties: {
+      sessionID: 'ses_q_done',
+      answer: 'Yes',
+      questions: [{ header: 'Confirm?' }],
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.equal(classified, null)
 })
 
 test('attention collapseKey differs by prompt topic', () => {
@@ -293,6 +367,160 @@ test('skip MessageAbortedError', () => {
   assert.equal(classified, null)
 })
 
+test('skip AbortError', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'session.error',
+    properties: {
+      sessionID: 'ses_abort_std',
+      error: {
+        name: 'AbortError',
+        message: 'The operation was aborted',
+      },
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.equal(classified, null)
+})
+
+test('skip user-cancelled error flags', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'session.error',
+    properties: {
+      sessionID: 'ses_abort_flag',
+      error: {
+        canceledByUser: true,
+      },
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.equal(classified, null)
+})
+
+test('skip user-cancelled error code', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'session.error',
+    properties: {
+      sessionID: 'ses_abort_code',
+      error: {
+        code: 'ERR_CANCELLED',
+      },
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.equal(classified, null)
+})
+
+test('suppress complete after abort error for same session', () => {
+  const classifyEvent = createEventClassifier()
+
+  const aborted = classifyEvent({
+    type: 'session.error',
+    properties: {
+      sessionID: 'ses_abort_idle',
+      error: {
+        name: 'MessageAbortedError',
+        data: { message: 'aborted' },
+      },
+    },
+  } as any)
+  assert.equal(aborted, null)
+
+  const idle = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_abort_idle',
+      status: { type: 'idle' },
+    },
+  } as any)
+  assert.equal(idle, null)
+})
+
+test('suppress legacy session.idle after abort error', () => {
+  const classifyEvent = createEventClassifier()
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.error',
+      properties: {
+        sessionID: 'ses_abort_idle_legacy',
+        error: {
+          name: 'MessageAbortedError',
+          data: { message: 'aborted' },
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const idle = classifyEvent({
+    type: 'session.idle',
+    properties: {
+      sessionID: 'ses_abort_idle_legacy',
+    },
+  } as any)
+  assert.equal(idle, null)
+})
+
+test('abort suppression does not affect other sessions', () => {
+  const classifyEvent = createEventClassifier()
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.error',
+      properties: {
+        sessionID: 'ses_abort_a',
+        error: {
+          name: 'MessageAbortedError',
+          data: { message: 'aborted' },
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const classified = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_abort_b',
+      status: { type: 'idle' },
+    },
+  } as any)
+
+  assert.ok(classified)
+  assert.equal(classified?.event, 'complete')
+})
+
+test('suppress complete after abort error without session id', () => {
+  const classifyEvent = createEventClassifier()
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.error',
+      properties: {
+        error: {
+          name: 'MessageAbortedError',
+          data: { message: 'aborted' },
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const idle = classifyEvent({
+    type: 'session.status',
+    properties: {
+      status: { type: 'idle' },
+    },
+  } as any)
+  assert.equal(idle, null)
+})
+
 test('classify error from session.error', () => {
   const classifyEvent = createEventClassifier()
   const event = {
@@ -309,6 +537,29 @@ test('classify error from session.error', () => {
   assert.ok(classified)
   assert.equal(classified?.event, 'error')
   assert.match(classified?.summary || '', /Rate limit exceeded/)
+})
+
+test('suppress immediate complete after non-abort error', () => {
+  const classifyEvent = createEventClassifier()
+
+  const errored = classifyEvent({
+    type: 'session.error',
+    properties: {
+      sessionID: 'ses_error_idle',
+      error: { message: 'Rate limit exceeded' },
+    },
+  } as any)
+  assert.ok(errored)
+  assert.equal(errored?.event, 'error')
+
+  const idle = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_error_idle',
+      status: { type: 'idle' },
+    },
+  } as any)
+  assert.equal(idle, null)
 })
 
 test('ignore lifecycle notifications for subagent sessions', () => {

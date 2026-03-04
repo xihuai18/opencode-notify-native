@@ -44,6 +44,12 @@ Design rules for this repo:
 - Never let notification failures break the conversation flow.
 - Use defensive payload parsing for events.
 
+Notification signal policy:
+
+- Notify only terminal, user-actionable events.
+- Do not notify non-terminal progress states (for example `running`, `thinking`, `retrying`, `progress`).
+- When event semantics are unclear, prefer no-notify and rely on debug logging for observation.
+
 ## 4) Configuration contract
 
 Config file path:
