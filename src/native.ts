@@ -323,22 +323,30 @@ async function notifyMac(
 
   let ok = await run('terminal-notifier', notifierArgs, { timeoutMs: 8000 })
 
-  const script =
-    'set t to "" ; set b to "" ; set s to "" ; ' +
-    'try ; set t to system attribute "OC_NOTIFY_TITLE" ; end try ; ' +
-    'try ; set b to system attribute "OC_NOTIFY_BODY" ; end try ; ' +
-    'try ; set s to system attribute "OC_NOTIFY_SOUND" ; end try ; ' +
-    'if s is not "" then display notification b with title t sound name s else display notification b with title t end if'
+  const script = [
+    'on run argv',
+    'set t to ""',
+    'set b to ""',
+    'set s to ""',
+    'if (count of argv) >= 1 then set t to item 1 of argv',
+    'if (count of argv) >= 2 then set b to item 2 of argv',
+    'if (count of argv) >= 3 then set s to item 3 of argv',
+    'if s is not "" then',
+    '  display notification b with title t sound name s',
+    'else',
+    '  display notification b with title t',
+    'end if',
+    'end run',
+  ].join('\n')
 
   if (!ok) {
-    ok = await run('osascript', ['-e', script], {
-      timeoutMs: 8000,
-      env: {
-        OC_NOTIFY_TITLE: title,
-        OC_NOTIFY_BODY: body,
-        OC_NOTIFY_SOUND: sound === false ? '' : mapped,
-      },
-    })
+    // `system attribute` decodes UTF-8 environment values incorrectly on many
+    // macOS setups. Pass user text via argv to preserve Unicode.
+    ok = await run(
+      'osascript',
+      ['-e', script, '--', title, body, sound === false ? '' : mapped],
+      { timeoutMs: 8000 },
+    )
   }
 
   if (ok) {
