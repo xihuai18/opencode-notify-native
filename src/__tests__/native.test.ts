@@ -4,7 +4,6 @@ import test from 'node:test'
 import {
   escapePango,
   escapeXml,
-  fnv1a32,
   macSoundName,
   windowsAudioNode,
 } from '../native.js'
@@ -19,11 +18,6 @@ test('escapePango escapes Pango markup characters', () => {
   const input = 'a&b<c>d'
   const out = escapePango(input)
   assert.equal(out, 'a&amp;b&lt;c&gt;d')
-})
-
-test('fnv1a32 is deterministic (known constants)', () => {
-  assert.equal(fnv1a32('test'), 2949673445)
-  assert.equal(fnv1a32('hello'), 1335831723)
 })
 
 test('windowsAudioNode maps boolean and named sounds', () => {

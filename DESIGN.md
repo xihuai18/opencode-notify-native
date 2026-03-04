@@ -42,6 +42,13 @@ Evidence source: local OpenCode source in `opencode/` and official docs.
 - Keep payload parsing defensive (event fields can drift by version).
 - Keep text short and sanitize token-like substrings.
 
+Notes:
+
+- Config is loaded once at plugin init (no hot-reload).
+- Collapse timers are `unref()`'d to keep shutdown fast; the last pending collapsed notification may be dropped on exit.
+- Backend backoff state is per notifier instance (created at plugin init) so separate plugin instances do not share suppression state.
+- Current OpenCode `Hooks` do not expose a dispose callback; dispatcher `dispose()` exists for tests/future lifecycle hooks.
+
 ## Configuration contract
 
 Primary config path: `~/.config/opencode/notify-native.config.json`

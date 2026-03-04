@@ -65,4 +65,10 @@ jobs:
           cd "$TMP"
           npm init -y >/dev/null 2>&1
           npm install --silent "./pkg.tgz"
-          node --input-type=module -e "import('@leo000001/opencode-notify-native').then(()=>console.log('ok'))" --no-warnings
+          node --input-type=module -e "
+            import plugin from '@leo000001/opencode-notify-native'
+            if (typeof plugin !== 'function') throw new Error('default export is not a function')
+            const hooks = await plugin({ worktree: process.cwd(), directory: process.cwd() })
+            if (!hooks || typeof hooks.event !== 'function') throw new Error('hooks.event missing')
+            console.log('ok')
+          " --no-warnings

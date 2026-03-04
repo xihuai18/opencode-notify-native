@@ -19,6 +19,75 @@ test('classify complete from session.status idle', () => {
   assert.equal(classified?.collapseKey, 'complete:ses_1')
 })
 
+test('classify attaches session title when known', () => {
+  const classifyEvent = createEventClassifier()
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.updated',
+      properties: {
+        info: {
+          id: 'ses_title_known',
+          title: 'Known Session',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const classified = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_title_known',
+      status: { type: 'idle' },
+    },
+  } as any)
+
+  assert.ok(classified)
+  assert.equal(classified?.sessionTitle, 'Known Session')
+})
+
+test('session title cache clears when title is updated to blank', () => {
+  const classifyEvent = createEventClassifier()
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.updated',
+      properties: {
+        info: {
+          id: 'ses_title_clear',
+          title: 'Temporary Title',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.updated',
+      properties: {
+        info: {
+          id: 'ses_title_clear',
+          title: '   ',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const classified = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_title_clear',
+      status: { type: 'idle' },
+    },
+  } as any)
+
+  assert.ok(classified)
+  assert.equal(classified?.sessionTitle, undefined)
+})
+
 test('suppress legacy session.idle when status idle seen', () => {
   const classifyEvent = createEventClassifier()
   const status = {
@@ -87,6 +156,72 @@ test('classify attention from permission.updated', () => {
   assert.match(classified?.summary || '', /\(git status\)/)
 })
 
+test('ignore permission.updated that already has a response', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'permission.updated',
+    properties: {
+      sessionID: 'ses_legacy_perm_done',
+      type: 'bash',
+      pattern: 'git status',
+      response: 'approved',
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.equal(classified, null)
+})
+
+test('do not ignore permission.updated for non-terminal response shapes', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'permission.updated',
+    properties: {
+      sessionID: 'ses_legacy_perm_done2',
+      type: 'bash',
+      pattern: 'git status',
+      response: { value: 'approved' },
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.ok(classified)
+  assert.equal(classified?.event, 'attention')
+})
+
+test('ignore permission.updated when reply contains terminal value', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'permission.updated',
+    properties: {
+      sessionID: 'ses_legacy_perm_done3',
+      type: 'bash',
+      pattern: 'git status',
+      reply: 'always',
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.equal(classified, null)
+})
+
+test('do not ignore permission.updated when response is false', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'permission.updated',
+    properties: {
+      sessionID: 'ses_legacy_perm_pending',
+      type: 'bash',
+      pattern: 'git status',
+      response: false,
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.ok(classified)
+  assert.equal(classified?.event, 'attention')
+})
+
 test('classify attention from question.asked', () => {
   const classifyEvent = createEventClassifier()
   const event = {
@@ -109,6 +244,38 @@ test('classify attention from question.asked', () => {
   assert.match(classified?.summary || '', /Confirm action/)
 })
 
+test('attention collapseKey differs by prompt topic', () => {
+  const classifyEvent = createEventClassifier()
+  const a = {
+    type: 'permission.asked',
+    properties: {
+      sessionID: 'ses_attn_keys',
+      permission: 'bash',
+      patterns: ['git status'],
+    },
+  } as any
+  const b = {
+    type: 'permission.asked',
+    properties: {
+      sessionID: 'ses_attn_keys',
+      permission: 'bash',
+      patterns: ['git diff'],
+    },
+  } as any
+
+  const ca = classifyEvent(a)
+  const cb = classifyEvent(b)
+  assert.ok(ca)
+  assert.ok(cb)
+  assert.equal(ca?.event, 'attention')
+  assert.equal(cb?.event, 'attention')
+  assert.notEqual(ca?.collapseKey, cb?.collapseKey)
+
+  const ca2 = classifyEvent(a)
+  assert.ok(ca2)
+  assert.equal(ca?.collapseKey, ca2?.collapseKey)
+})
+
 test('skip MessageAbortedError', () => {
   const classifyEvent = createEventClassifier()
   const event = {
@@ -124,4 +291,152 @@ test('skip MessageAbortedError', () => {
 
   const classified = classifyEvent(event)
   assert.equal(classified, null)
+})
+
+test('classify error from session.error', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'session.error',
+    properties: {
+      sessionID: 'ses_err',
+      error: {
+        message: 'Rate limit exceeded',
+      },
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.ok(classified)
+  assert.equal(classified?.event, 'error')
+  assert.match(classified?.summary || '', /Rate limit exceeded/)
+})
+
+test('ignore lifecycle notifications for subagent sessions', () => {
+  const classifyEvent = createEventClassifier()
+
+  const subagentUpdated = {
+    type: 'session.updated',
+    properties: {
+      info: {
+        id: 'ses_sub',
+        parentID: 'ses_root',
+      },
+    },
+  } as any
+  assert.equal(classifyEvent(subagentUpdated), null)
+
+  const subagentIdle = {
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_sub',
+      status: { type: 'idle' },
+    },
+  } as any
+  assert.equal(classifyEvent(subagentIdle), null)
+
+  const subagentError = {
+    type: 'session.error',
+    properties: {
+      sessionID: 'ses_sub',
+      error: { message: 'boom' },
+    },
+  } as any
+  assert.equal(classifyEvent(subagentError), null)
+
+  const subagentPermission = {
+    type: 'permission.asked',
+    properties: {
+      sessionID: 'ses_sub',
+      permission: 'bash',
+      patterns: ['git status'],
+    },
+  } as any
+  assert.equal(classifyEvent(subagentPermission), null)
+
+  const subagentQuestion = {
+    type: 'question.asked',
+    properties: {
+      sessionID: 'ses_sub',
+      questions: [{ header: 'Continue?' }],
+    },
+  } as any
+  assert.equal(classifyEvent(subagentQuestion), null)
+})
+
+test('session lineage updates can re-enable notifications', () => {
+  const classifyEvent = createEventClassifier()
+
+  const subagentUpdated = {
+    type: 'session.updated',
+    properties: {
+      info: {
+        id: 'ses_moved',
+        parentID: 'ses_root',
+      },
+    },
+  } as any
+  assert.equal(classifyEvent(subagentUpdated), null)
+
+  const nowRootUpdated = {
+    type: 'session.updated',
+    properties: {
+      info: {
+        id: 'ses_moved',
+      },
+    },
+  } as any
+  assert.equal(classifyEvent(nowRootUpdated), null)
+
+  const idle = {
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_moved',
+      status: { type: 'idle' },
+    },
+  } as any
+
+  const classified = classifyEvent(idle)
+  assert.ok(classified)
+  assert.equal(classified?.event, 'complete')
+})
+
+test('session.deleted evicts subagent/session caches', () => {
+  const classifyEvent = createEventClassifier()
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.updated',
+      properties: {
+        info: {
+          id: 'ses_deleted',
+          parentID: 'ses_root',
+          title: 'Will be removed',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.deleted',
+      properties: {
+        info: {
+          id: 'ses_deleted',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const classified = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses_deleted',
+      status: { type: 'idle' },
+    },
+  } as any)
+  assert.ok(classified)
+  assert.equal(classified?.event, 'complete')
+  assert.equal(classified?.sessionTitle, undefined)
 })

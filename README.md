@@ -24,6 +24,18 @@ Direct native notification plugin for OpenCode.
 - Notification anti-spam controls (collapse + cooldown)
 - Basic text sanitization and truncation
 
+## Runtime compatibility
+
+- This package is ESM-only (`"type": "module"`).
+
+## Notification content
+
+- Title format: `OpenCode · <Session Title or Project>`
+- Body first line: `<Completed|Error|Attention> · <summary>`
+- Optional body lines:
+  - `Project Dir: <shortened worktree path>` (controlled by `showDirectory`)
+  - `Session ID: <first 8 chars>` (controlled by `showSessionId`, default off)
+
 ## Install
 
 ### From npm
@@ -36,6 +48,12 @@ Add to `opencode.json`:
   "plugin": ["@leo000001/opencode-notify-native"]
 }
 ```
+
+### `opencode.json` vs `tui.json`
+
+- Put plugin registration in `opencode.json` (`plugin: [...]`).
+- Use `tui.json` only for terminal UI preferences/keymaps.
+- This plugin is loaded from OpenCode runtime config, not from TUI-only config.
 
 ### Local development install
 
@@ -61,6 +79,7 @@ Notes:
 Recommended global config:
 
 - `~/.config/opencode/notify-native.config.json`
+- Windows fallback: `%APPDATA%\\opencode\\notify-native.config.json`
 
 Optional project overrides:
 
@@ -104,10 +123,17 @@ Values are layered; later sources override earlier ones.
   "cooldownMs": 30000,
   "sanitize": true,
   "maxBodyLength": 200,
-  "showDirectory": true,
+  "showDirectory": false,
   "showSessionId": false
 }
 ```
+
+Notes:
+
+- `sanitize: true` enables best-effort redaction of token-like substrings (for example `Bearer ...`).
+- Regardless of `sanitize`, the plugin normalizes whitespace, strips control characters, and clamps lengths to keep notification backends stable.
+- If you set `sanitize: false`, notifications may include secrets from tool output or error messages.
+- `showDirectory` defaults to `false` to reduce lock-screen/path leakage. Enable it only if directory context is worth the privacy tradeoff.
 
 ## Data files
 
@@ -117,14 +143,17 @@ Values are layered; later sources override earlier ones.
 ## Platform notes
 
 - Windows: notifications depend on system notification settings and Focus Assist.
-- macOS: tries `terminal-notifier` first (recommended), falls back to `osascript`. The `osascript` fallback cannot replace/group notifications at the OS level, so install `terminal-notifier` if you want best replacement behavior.
+- macOS: tries `terminal-notifier` first (recommended), falls back to `osascript`. The `osascript` fallback cannot replace/group notifications at the OS level, so install `terminal-notifier` (for example `brew install terminal-notifier`) if you want best replacement behavior.
 - Linux: requires `notify-send` (for example `libnotify-bin` on Debian/Ubuntu). `notify-send` has no standard sound support; this plugin can only best-effort play sounds when `canberra-gtk-play` is available.
 
 ## Debugging
 
-If a config file exists but is ignored (for example due to invalid JSON), this plugin fails closed and uses defaults.
+If a config file exists but is ignored (for example due to invalid JSON), this plugin falls back to the last successfully loaded config (built-in defaults if none).
 
-- Set `OPENCODE_NOTIFY_NATIVE_DEBUG=1` to log config load errors to stderr.
+- Non-ENOENT config load failures emit a one-time warning to stderr.
+- Unknown config keys emit a one-time warning and are ignored.
+- Set `OPENCODE_NOTIFY_NATIVE_DEBUG=1` for detailed debug logs (including full error messages and ignored event traces).
+- Config is loaded once at plugin initialization (no hot-reload during a running session).
 
 If you are testing and expect a banner for every completion, note the defaults:
 
@@ -134,6 +163,7 @@ If you are testing and expect a banner for every completion, note the defaults:
 Implementation note:
 
 - `collapseWindowMs` is a fixed window starting at the first event for a given key (it does not extend on each subsequent event).
+- Collapse timers are `unref()`'d, so a last pending collapsed notification can be dropped if OpenCode exits before the window fires.
 
 ## Click behavior
 
@@ -153,6 +183,7 @@ npm test
 
 - CI and release workflows publish only the npm plugin.
 - Tag push (`v*`) runs build/typecheck/test/pack and optionally publishes to npm when `NPM_TOKEN` is configured.
+- Before release, ensure your local worktree is clean (`git status`) so unpublished local edits do not skew manual verification.
 
 ## Design and maintenance docs
 

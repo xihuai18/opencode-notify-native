@@ -3,6 +3,8 @@ import os from 'node:os'
 import { readFile } from 'node:fs/promises'
 
 import type { NotifySound, PluginConfig } from './types.js'
+import { debugWarn } from './debug.js'
+import { isRecord } from './guards.js'
 
 const DEFAULT_CONFIG: PluginConfig = {
   enabled: true,
@@ -10,7 +12,7 @@ const DEFAULT_CONFIG: PluginConfig = {
   maxBodyLength: 200,
   collapseWindowMs: 3000,
   cooldownMs: 30000,
-  showDirectory: true,
+  showDirectory: false,
   showSessionId: false,
   events: {
     complete: true,
@@ -24,22 +26,28 @@ const DEFAULT_CONFIG: PluginConfig = {
   },
 }
 
-function debugEnabled(): boolean {
-  const value = process.env.OPENCODE_NOTIFY_NATIVE_DEBUG?.trim().toLowerCase()
-  return value === '1' || value === 'true' || value === 'yes'
+const visibleWarned = new Set<string>()
+
+function displayPath(filePath: string): string {
+  const resolved = path.resolve(filePath)
+  const home = path.resolve(os.homedir())
+  const lhs = process.platform === 'win32' ? resolved.toLowerCase() : resolved
+  const rhs = process.platform === 'win32' ? home.toLowerCase() : home
+  if (lhs === rhs || lhs.startsWith(`${rhs}${path.sep}`)) {
+    return `~${resolved.slice(home.length)}`
+  }
+  const base = path.basename(resolved)
+  return base ? `...${path.sep}${base}` : resolved
 }
 
-function debugWarn(message: string): void {
-  if (!debugEnabled()) return
+function visibleWarnOnce(key: string, message: string): void {
+  if (visibleWarned.has(key)) return
+  visibleWarned.add(key)
   try {
-    process.stderr.write(`[notify-native] ${message}\n`)
+    process.stderr.write(`[notify-native] Warning: ${message}\n`)
   } catch {
     // Best-effort only.
   }
-}
-
-function isRecord(input: unknown): input is Record<string, unknown> {
-  return typeof input === 'object' && input !== null && !Array.isArray(input)
 }
 
 function asBoolean(input: unknown, fallback: boolean): boolean {
@@ -66,8 +74,37 @@ function asSound(input: unknown, fallback: NotifySound): NotifySound {
   return fallback
 }
 
+const TOP_LEVEL_KEYS = new Set([
+  'enabled',
+  'sanitize',
+  'maxBodyLength',
+  'collapseWindowMs',
+  'cooldownMs',
+  'showDirectory',
+  'showSessionId',
+  'events',
+  'soundByEvent',
+])
+
+const EVENT_KEYS = new Set(['complete', 'error', 'attention'])
+
+function warnUnknownKeys(
+  input: Record<string, unknown>,
+  valid: Set<string>,
+  scope: string,
+): void {
+  for (const key of Object.keys(input)) {
+    if (valid.has(key)) continue
+    visibleWarnOnce(
+      `unknown:${scope}:${key}`,
+      `unknown config key "${scope}${key}" is ignored`,
+    )
+  }
+}
+
 function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
   if (!isRecord(input)) return base
+  warnUnknownKeys(input, TOP_LEVEL_KEYS, '')
 
   const next: PluginConfig = {
     ...base,
@@ -92,6 +129,7 @@ function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
   }
 
   if (isRecord(input.events)) {
+    warnUnknownKeys(input.events, EVENT_KEYS, 'events.')
     next.events.complete = asBoolean(
       input.events.complete,
       next.events.complete,
@@ -104,6 +142,7 @@ function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
   }
 
   if (isRecord(input.soundByEvent)) {
+    warnUnknownKeys(input.soundByEvent, EVENT_KEYS, 'soundByEvent.')
     next.soundByEvent.complete = asSound(
       input.soundByEvent.complete,
       next.soundByEvent.complete,
@@ -129,6 +168,11 @@ async function readConfigFile(filePath: string): Promise<unknown> {
 function resolveConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME?.trim()
   if (xdg) return path.join(path.resolve(xdg), 'opencode')
+
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA?.trim()
+    if (appData) return path.join(path.resolve(appData), 'opencode')
+  }
   return path.join(os.homedir(), '.config', 'opencode')
 }
 
@@ -151,13 +195,16 @@ function dedupePaths(paths: string[]): string[] {
   return output
 }
 
-async function mergeIfExists(
-  base: PluginConfig,
+async function readParsedIfExists(
   filePath: string,
-): Promise<PluginConfig> {
+): Promise<Record<string, unknown> | null> {
   try {
     const parsed = await readConfigFile(filePath)
-    return mergeConfig(base, parsed)
+    if (!isRecord(parsed)) {
+      debugWarn(`Ignoring non-object config ${filePath}`)
+      return null
+    }
+    return parsed
   } catch (error) {
     const code =
       typeof error === 'object' &&
@@ -166,13 +213,17 @@ async function mergeIfExists(
       typeof (error as any).code === 'string'
         ? String((error as any).code)
         : ''
-    if (code === 'ENOENT' || code === 'ENOTDIR') return base
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null
+    visibleWarnOnce(
+      filePath,
+      `failed to load config ${displayPath(filePath)}; using lower-precedence/default values`,
+    )
     debugWarn(
       `Failed to load config ${filePath}: ${
         error instanceof Error ? error.message : String(error)
       }`,
     )
-    return base
+    return null
   }
 }
 
@@ -207,9 +258,15 @@ export async function loadPluginConfig(
     ...(override ? [override] : []),
   ])
 
+  const parsedLayers = await Promise.all(
+    layers.map((layer) => readParsedIfExists(layer)),
+  )
+
   let config = defaultPluginConfig()
-  for (const layer of layers) {
-    config = await mergeIfExists(config, layer)
+  for (let i = 0; i < layers.length; i += 1) {
+    const parsed = parsedLayers[i]
+    if (!parsed) continue
+    config = mergeConfig(config, parsed)
   }
   return config
 }

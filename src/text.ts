@@ -3,6 +3,9 @@ import os from 'node:os'
 
 const TOKEN_PATTERNS = [
   /sk-[A-Za-z0-9_-]{10,}/g,
+  /sk_(live|test)_[0-9a-zA-Z]{10,}/g,
+  /rk_(live|test)_[0-9a-zA-Z]{10,}/g,
+  /pk_(live|test)_[0-9a-zA-Z]{10,}/g,
   /gh[opsu]_[A-Za-z0-9]{10,}/g,
   /github_pat_[A-Za-z0-9_]{10,}/g,
   /glpat-[A-Za-z0-9_-]{10,}/g,
@@ -15,6 +18,8 @@ const TOKEN_PATTERNS = [
   /ya29\.[0-9A-Za-z_-]{10,}/g,
   /xox[baprs]-[A-Za-z0-9-]{10,}/g,
 ]
+
+const REDACTION_SCAN_LIMIT = 4096
 
 function clamp(input: string, maxLength: number): string {
   const limit = Math.max(0, Math.floor(maxLength))
@@ -30,6 +35,7 @@ function normalizeText(input: string): string {
   return input
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
+    .replace(/\t/g, ' ')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .trim()
 }
@@ -42,7 +48,14 @@ export function sanitizeText(
   const maxLength = Math.max(1, options.maxLength)
   if (!options.enabled) return clamp(normalized, maxLength)
 
-  let output = normalized
+  const scanLimit = Math.max(REDACTION_SCAN_LIMIT, maxLength + 64)
+
+  const preCapped =
+    normalized.length > scanLimit
+      ? `${normalized.slice(0, scanLimit)}...`
+      : normalized
+
+  let output = preCapped
   for (const pattern of TOKEN_PATTERNS) {
     output = output.replace(pattern, '[REDACTED]')
   }
@@ -89,9 +102,8 @@ export function summarizeError(error: unknown): string {
 }
 
 export function shortPath(input: string): string {
-  const value = input.replace(/[\\/]/g, path.sep)
   const home = os.homedir()
-  const normalizedInput = path.normalize(value)
+  const normalizedInput = path.normalize(input)
   const normalizedHome = path.normalize(home)
 
   const haystack =
@@ -101,7 +113,13 @@ export function shortPath(input: string): string {
   const needle =
     process.platform === 'win32' ? normalizedHome.toLowerCase() : normalizedHome
 
-  if (haystack.startsWith(needle)) {
+  const homeMatch =
+    haystack === needle ||
+    haystack.startsWith(
+      needle.endsWith(path.sep) ? needle : `${needle}${path.sep}`,
+    )
+
+  if (homeMatch) {
     const relative = normalizedInput
       .slice(normalizedHome.length)
       .replace(/^[/\\]/, '')
@@ -111,16 +129,26 @@ export function shortPath(input: string): string {
 
   const segments = normalizedInput.split(path.sep).filter(Boolean)
   if (segments.length <= 3) return normalizedInput
-  return `${segments.slice(0, 1).join(path.sep)}${path.sep}...${path.sep}${segments
-    .slice(-2)
-    .join(path.sep)}`
+
+  let prefix = ''
+  if (process.platform === 'win32') {
+    if (normalizedInput.startsWith('\\\\')) prefix = '\\\\'
+  } else if (normalizedInput.startsWith(path.sep)) {
+    prefix = path.sep
+  }
+
+  const headCount = prefix === '\\\\' ? 2 : 1
+  const first = segments.slice(0, headCount).join(path.sep)
+  const tail = segments.slice(-2).join(path.sep)
+
+  return `${prefix}${first}${path.sep}...${path.sep}${tail}`
 }
 
 export function toProjectName(worktree: string, directory: string): string {
   const fromWorktree = path.basename(worktree)
-  if (fromWorktree && fromWorktree !== path.sep) return fromWorktree
+  if (fromWorktree) return fromWorktree
   const fromDirectory = path.basename(directory)
-  if (fromDirectory && fromDirectory !== path.sep) return fromDirectory
+  if (fromDirectory) return fromDirectory
   return 'project'
 }
 

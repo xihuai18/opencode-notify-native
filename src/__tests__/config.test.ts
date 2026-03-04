@@ -132,4 +132,5 @@ test('defaultPluginConfig returns a deep copy', () => {
 
   assert.equal(b.events.complete, true)
   assert.equal(b.soundByEvent.error, 'error')
+  assert.equal(b.showDirectory, false)
 })

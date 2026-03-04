@@ -26,5 +26,8 @@ export type ClassifiedEvent = {
   source: string
   summary: string
   sessionID?: string
+  sessionTitle?: string
   collapseKey: string
+  // Present for attention events; used to group/replace OS notifications.
+  topicKey?: string
 }
