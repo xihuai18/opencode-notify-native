@@ -284,8 +284,8 @@ test(
       const notify = createNativeNotifier();
       const ok = await awaitWithKeepAlive(
         notify({
-          title: "Title",
-          body: "Body",
+          title: "OpenCode · 测试",
+          body: "Body · 任务完成",
           event: "error",
           sound: false,
           group: `\u0000${"x".repeat(300)}\u001f`,
@@ -303,10 +303,11 @@ test(
 
       assert.equal(log[1].cmd, "osascript");
       assert.equal(log[1].args[0], "-e");
-      assert.match(log[1].args[1], /\nend if$/);
-      assert.equal(log[1].env.OC_NOTIFY_TITLE, "Title");
-      assert.equal(log[1].env.OC_NOTIFY_BODY, "Body");
-      assert.equal(log[1].env.OC_NOTIFY_SOUND, "");
+      assert.match(log[1].args[1], /\nend run$/);
+      assert.equal(log[1].args[2], "--");
+      assert.equal(log[1].args[3], "OpenCode · 测试");
+      assert.equal(log[1].args[4], "Body · 任务完成");
+      assert.equal(log[1].args[5], "");
     } finally {
       restore();
       await cleanupTmpDir(binDir);
