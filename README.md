@@ -28,10 +28,14 @@ Direct native notification plugin for OpenCode.
 ## Notification signal policy
 
 - Notify only terminal, user-actionable events.
-- Do not notify non-terminal progress states (for example `running`, `thinking`, `retrying`, `progress`).
-- User-initiated interrupt/cancel/abort flows are treated as no-notify outcomes.
-- Short idle transitions right after cancel/error signals are suppressed to reduce false "Completed" or "Error + Completed" noise.
-- Terminal `permission.updated` / `question.updated` replies are suppressed; only unresolved prompts notify as attention.
+- Do not notify non-terminal progress states; specifically, `session.status` with `busy` / `retry` is always ignored.
+- Treat user-initiated interrupt/cancel/abort flows as no-notify outcomes.
+- `session.status idle` is considered complete only after a recent active status for the same session.
+- Legacy `session.idle` duplicates are suppressed when `session.status idle` has already been seen.
+- Complete notifications are held briefly and canceled if a `session.error` arrives right after idle, preventing false "Completed" after failures/aborts.
+- Idle transitions right after non-abort errors are suppressed to avoid "Error + Completed" double noise.
+- Attention notifications are emitted only for unresolved prompts (`permission.asked`, unresolved legacy `permission.updated`, and `question.asked`).
+- Acknowledgement events (`permission.replied`, `question.replied`, `question.rejected`) and legacy `question.updated` are ignored.
 - When event semantics are unclear, the plugin prefers no-notify and relies on debug logs for observation.
 
 ## Runtime compatibility

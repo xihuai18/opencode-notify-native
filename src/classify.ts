@@ -11,6 +11,7 @@ type RawEvent = {
 const RECENT_SIGNAL_CACHE_TTL_MS = 60_000
 const ABORT_IDLE_SUPPRESS_MS = 10_000
 const ERROR_IDLE_SUPPRESS_MS = 5_000
+const ACTIVE_IDLE_WINDOW_MS = 2 * 60 * 60_000
 const GLOBAL_SESSION_KEY = 'global'
 
 const TERMINAL_UPDATE_STATES = new Set([
@@ -29,31 +30,15 @@ const TERMINAL_UPDATE_STATES = new Set([
   'done',
   'answered',
   'closed',
+  'once',
+  'always',
+  'allow',
+  'reject',
 ])
 
-const INTERRUPT_REASONS = new Set([
-  'interrupt',
-  'interrupted',
-  'cancel',
-  'cancelled',
-  'canceled',
-  'abort',
-  'aborted',
-])
-
-function hasTerminalText(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().length > 0
-}
-
-function hasTerminalFlag(value: unknown): boolean {
-  return value === true || hasTerminalText(value)
-}
-
-function hasTerminalQuestionAnswer(value: unknown): boolean {
-  if (typeof value === 'boolean') return true
-  if (typeof value === 'number') return Number.isFinite(value)
-  if (hasTerminalText(value)) return true
-  return false
+function hasTerminalOutcome(value: unknown): boolean {
+  if (value === true) return true
+  return isTerminalState(value)
 }
 
 function isTerminalState(value: unknown): boolean {
@@ -61,13 +46,6 @@ function isTerminalState(value: unknown): boolean {
   const token = value.trim().toLowerCase()
   if (!token) return false
   return TERMINAL_UPDATE_STATES.has(token)
-}
-
-function isInterruptReason(value: unknown): boolean {
-  if (typeof value !== 'string') return false
-  const token = value.trim().toLowerCase()
-  if (!token) return false
-  return INTERRUPT_REASONS.has(token)
 }
 
 function hasTerminalUpdateState(properties: Record<string, unknown>): boolean {
@@ -167,6 +145,7 @@ export function createEventClassifier(): (
   const recentIdleStatusBySession = new Map<string, number>()
   const recentAbortBySession = new Map<string, number>()
   const recentErrorBySession = new Map<string, number>()
+  const recentActiveBySession = new Map<string, number>()
   const sessionTitleBySession = new Map<string, string>()
   const sessionSeenAt = new Map<string, number>()
   // Track subagent sessions (child sessions) so we do not notify for their
@@ -177,6 +156,7 @@ export function createEventClassifier(): (
     recentIdleStatusBySession.delete(sessionID)
     recentAbortBySession.delete(sessionID)
     recentErrorBySession.delete(sessionID)
+    recentActiveBySession.delete(sessionID)
     sessionTitleBySession.delete(sessionID)
     subagentSessions.delete(sessionID)
     sessionSeenAt.delete(sessionID)
@@ -219,12 +199,13 @@ export function createEventClassifier(): (
   function rememberRecentSignal(
     cache: Map<string, number>,
     sessionID: string | undefined,
+    ttlMs = RECENT_SIGNAL_CACHE_TTL_MS,
   ): void {
     const now = Date.now()
     cache.set(sessionCacheKey(sessionID), now)
     if (cache.size < 200) return
     for (const [key, ts] of cache) {
-      if (now - ts > RECENT_SIGNAL_CACHE_TTL_MS) cache.delete(key)
+      if (now - ts > ttlMs) cache.delete(key)
     }
   }
 
@@ -243,6 +224,14 @@ export function createEventClassifier(): (
     const ts = recentIdleStatusBySession.get(sessionID)
     if (!ts) return false
     return Date.now() - ts < 5_000
+  }
+
+  function sawRecentActive(sessionID: string | undefined): boolean {
+    return sawRecentSignal(
+      recentActiveBySession,
+      sessionID,
+      ACTIVE_IDLE_WINDOW_MS,
+    )
   }
 
   function isSubagentSession(sessionID: string | undefined): boolean {
@@ -277,9 +266,12 @@ export function createEventClassifier(): (
       return
     }
 
-    const parentID = firstString(info, ['parentID', 'parentId'])?.trim() || ''
-    if (parentID) subagentSessions.add(sessionID)
-    else subagentSessions.delete(sessionID)
+    const hasParentField = 'parentID' in info || 'parentId' in info
+    if (hasParentField) {
+      const parentID = firstString(info, ['parentID', 'parentId'])?.trim() || ''
+      if (parentID) subagentSessions.add(sessionID)
+      else subagentSessions.delete(sessionID)
+    }
 
     if (typeof info.title === 'string') {
       const title = info.title.trim()
@@ -291,22 +283,35 @@ export function createEventClassifier(): (
   function classifySessionStatus(event: RawEvent): ClassifiedEvent | null {
     if (event.type !== 'session.status') return null
     if (!isRecord(event.properties)) return null
-    const status = isRecord(event.properties.status)
-      ? event.properties.status
-      : null
-    if (!status || status.type !== 'idle') return null
-    if (
-      isInterruptReason(status.reason) ||
-      status.cancelled === true ||
-      status.canceled === true ||
-      status.aborted === true ||
-      status.interrupted === true
-    ) {
-      return null
-    }
     const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
+
+    const status = isRecord(event.properties.status)
+      ? event.properties.status
+      : null
+    if (!status) return null
+
+    const statusType =
+      typeof status.type === 'string' ? status.type.trim().toLowerCase() : ''
+    if (!statusType) return null
+
+    if (statusType === 'busy' || statusType === 'retry') {
+      if (sessionID) {
+        rememberRecentSignal(
+          recentActiveBySession,
+          sessionID,
+          ACTIVE_IDLE_WINDOW_MS,
+        )
+      }
+      return null
+    }
+
+    if (statusType !== 'idle') return null
+    if (!sessionID) return null
+    if (!sawRecentActive(sessionID)) return null
+    recentActiveBySession.delete(sessionID)
+
     if (
       sawRecentSignal(recentAbortBySession, sessionID, ABORT_IDLE_SUPPRESS_MS)
     )
@@ -333,6 +338,10 @@ export function createEventClassifier(): (
     const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
+    if (!sessionID) return null
+    if (!sawRecentActive(sessionID)) return null
+    recentActiveBySession.delete(sessionID)
+
     if (
       sawRecentSignal(recentAbortBySession, sessionID, ABORT_IDLE_SUPPRESS_MS)
     )
@@ -342,6 +351,7 @@ export function createEventClassifier(): (
     )
       return null
     if (recentlySawIdleStatus(sessionID)) return null
+    rememberIdleStatus(sessionID)
     return {
       event: 'complete',
       source: event.type,
@@ -358,6 +368,8 @@ export function createEventClassifier(): (
     const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
+    if (sessionID) recentActiveBySession.delete(sessionID)
+
     if (isAbortLikeError(event.properties.error)) {
       rememberRecentSignal(recentAbortBySession, sessionID)
       return null
@@ -383,10 +395,10 @@ export function createEventClassifier(): (
 
     // Legacy streams may reuse `permission.updated` for post-reply updates.
     // Those are not actionable prompts and should not notify.
-    const hasTerminalResponse = hasTerminalFlag(event.properties.response)
-    const hasTerminalReply = hasTerminalFlag(event.properties.reply)
-    const hasTerminalDecision = hasTerminalFlag(event.properties.decision)
-    const hasTerminalResult = hasTerminalFlag(event.properties.result)
+    const hasTerminalResponse = hasTerminalOutcome(event.properties.response)
+    const hasTerminalReply = hasTerminalOutcome(event.properties.reply)
+    const hasTerminalDecision = hasTerminalOutcome(event.properties.decision)
+    const hasTerminalResult = hasTerminalOutcome(event.properties.result)
     const hasTerminalState = hasTerminalUpdateState(event.properties)
     if (
       event.type === 'permission.updated' &&
@@ -449,26 +461,8 @@ export function createEventClassifier(): (
   }
 
   function classifyQuestion(event: RawEvent): ClassifiedEvent | null {
-    if (event.type !== 'question.asked' && event.type !== 'question.updated')
-      return null
+    if (event.type !== 'question.asked') return null
     if (!isRecord(event.properties)) return null
-
-    if (event.type === 'question.updated') {
-      const hasAnswer = hasTerminalQuestionAnswer(event.properties.answer)
-      const hasResponse = hasTerminalFlag(event.properties.response)
-      const hasReply = hasTerminalFlag(event.properties.reply)
-      const hasResult = hasTerminalFlag(event.properties.result)
-      const hasResolvedState = hasTerminalUpdateState(event.properties)
-      if (
-        hasAnswer ||
-        hasResponse ||
-        hasReply ||
-        hasResult ||
-        hasResolvedState
-      ) {
-        return null
-      }
-    }
     const sessionID = readSessionID(event.properties)
     touchSession(sessionID)
     if (isSubagentSession(sessionID)) return null
@@ -511,7 +505,7 @@ export function createEventClassifier(): (
     if (raw.type === 'permission.asked' || raw.type === 'permission.updated') {
       return classifyPermission(raw)
     }
-    if (raw.type === 'question.asked' || raw.type === 'question.updated') {
+    if (raw.type === 'question.asked') {
       return classifyQuestion(raw)
     }
     return null

@@ -3,8 +3,24 @@ import test from 'node:test'
 
 import { createEventClassifier } from '../classify.js'
 
+function markSessionBusy(
+  classifyEvent: ReturnType<typeof createEventClassifier>,
+  sessionID: string,
+  alias = false,
+): void {
+  const properties = alias
+    ? { sessionId: sessionID, status: { type: 'busy' } }
+    : { sessionID, status: { type: 'busy' } }
+  const classified = classifyEvent({
+    type: 'session.status',
+    properties,
+  } as any)
+  assert.equal(classified, null)
+}
+
 test('classify complete from session.status idle', () => {
   const classifyEvent = createEventClassifier()
+  markSessionBusy(classifyEvent, 'ses_1')
   const event = {
     type: 'session.status',
     properties: {
@@ -21,6 +37,7 @@ test('classify complete from session.status idle', () => {
 
 test('classify complete from session.status idle with sessionId alias', () => {
   const classifyEvent = createEventClassifier()
+  markSessionBusy(classifyEvent, 'ses_alias', true)
   const event = {
     type: 'session.status',
     properties: {
@@ -50,6 +67,8 @@ test('classify attaches session title when known', () => {
     } as any),
     null,
   )
+
+  markSessionBusy(classifyEvent, 'ses_title_known')
 
   const classified = classifyEvent({
     type: 'session.status',
@@ -92,6 +111,8 @@ test('session title cache clears when title is updated to blank', () => {
     null,
   )
 
+  markSessionBusy(classifyEvent, 'ses_title_clear')
+
   const classified = classifyEvent({
     type: 'session.status',
     properties: {
@@ -106,6 +127,7 @@ test('session title cache clears when title is updated to blank', () => {
 
 test('suppress legacy session.idle when status idle seen', () => {
   const classifyEvent = createEventClassifier()
+  markSessionBusy(classifyEvent, 'ses_dupe')
   const status = {
     type: 'session.status',
     properties: {
@@ -126,6 +148,7 @@ test('suppress legacy session.idle when status idle seen', () => {
 
 test('classify complete from legacy session.idle', () => {
   const classifyEvent = createEventClassifier()
+  markSessionBusy(classifyEvent, 'ses_legacy')
   const event = {
     type: 'session.idle',
     properties: {
@@ -138,30 +161,59 @@ test('classify complete from legacy session.idle', () => {
   assert.equal(classified?.event, 'complete')
 })
 
-test('do not classify idle with cancelled reason as complete', () => {
+test('do not classify idle without recent active status', () => {
   const classifyEvent = createEventClassifier()
   const classified = classifyEvent({
     type: 'session.status',
     properties: {
-      sessionID: 'ses_reason_cancel',
-      status: { type: 'idle', reason: 'cancelled' },
+      sessionID: 'ses_no_active',
+      status: { type: 'idle' },
     },
   } as any)
 
   assert.equal(classified, null)
 })
 
-test('do not classify idle with interrupted flag as complete', () => {
+test('ignore non-idle session.status values', () => {
   const classifyEvent = createEventClassifier()
-  const classified = classifyEvent({
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.status',
+      properties: {
+        sessionID: 'ses_status_busy',
+        status: { type: 'busy' },
+      },
+    } as any),
+    null,
+  )
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.status',
+      properties: {
+        sessionID: 'ses_status_retry',
+        status: {
+          type: 'retry',
+          attempt: 1,
+          message: 'temporary failure',
+          next: Date.now() + 1000,
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const complete = classifyEvent({
     type: 'session.status',
     properties: {
-      sessionID: 'ses_flag_interrupt',
-      status: { type: 'idle', interrupted: true },
+      sessionID: 'ses_status_retry',
+      status: { type: 'idle' },
     },
   } as any)
 
-  assert.equal(classified, null)
+  assert.ok(complete)
+  assert.equal(complete?.event, 'complete')
 })
 
 test('classify attention from permission.asked', () => {
@@ -280,6 +332,38 @@ test('do not ignore permission.updated when response is false', () => {
   assert.equal(classified?.event, 'attention')
 })
 
+test('do not ignore permission.updated when response is pending string', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'permission.updated',
+    properties: {
+      sessionID: 'ses_legacy_perm_pending_str',
+      type: 'bash',
+      pattern: 'git status',
+      response: 'pending',
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.ok(classified)
+  assert.equal(classified?.event, 'attention')
+})
+
+test('ignore permission.replied acknowledgement events', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'permission.replied',
+    properties: {
+      sessionID: 'ses_perm_reply',
+      requestID: 'perm_1',
+      reply: 'once',
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.equal(classified, null)
+})
+
 test('classify attention from question.asked', () => {
   const classifyEvent = createEventClassifier()
   const event = {
@@ -302,7 +386,7 @@ test('classify attention from question.asked', () => {
   assert.match(classified?.summary || '', /Confirm action/)
 })
 
-test('classify attention from question.updated when unresolved', () => {
+test('ignore question.updated legacy events', () => {
   const classifyEvent = createEventClassifier()
   const event = {
     type: 'question.updated',
@@ -314,24 +398,34 @@ test('classify attention from question.updated when unresolved', () => {
   } as any
 
   const classified = classifyEvent(event)
-  assert.ok(classified)
-  assert.equal(classified?.event, 'attention')
-  assert.match(classified?.summary || '', /Pick one option/)
+  assert.equal(classified, null)
 })
 
-test('ignore question.updated when answer is present', () => {
+test('ignore question.replied and question.rejected acknowledgements', () => {
   const classifyEvent = createEventClassifier()
-  const event = {
-    type: 'question.updated',
-    properties: {
-      sessionID: 'ses_q_done',
-      answer: 'Yes',
-      questions: [{ header: 'Confirm?' }],
-    },
-  } as any
 
-  const classified = classifyEvent(event)
-  assert.equal(classified, null)
+  assert.equal(
+    classifyEvent({
+      type: 'question.replied',
+      properties: {
+        sessionID: 'ses_q_done',
+        requestID: 'q_1',
+        answers: [['Yes']],
+      },
+    } as any),
+    null,
+  )
+
+  assert.equal(
+    classifyEvent({
+      type: 'question.rejected',
+      properties: {
+        sessionID: 'ses_q_done',
+        requestID: 'q_1',
+      },
+    } as any),
+    null,
+  )
 })
 
 test('attention collapseKey differs by prompt topic', () => {
@@ -434,6 +528,7 @@ test('skip user-cancelled error code', () => {
 
 test('suppress complete after abort error for same session', () => {
   const classifyEvent = createEventClassifier()
+  markSessionBusy(classifyEvent, 'ses_abort_idle')
 
   const aborted = classifyEvent({
     type: 'session.error',
@@ -459,6 +554,7 @@ test('suppress complete after abort error for same session', () => {
 
 test('suppress legacy session.idle after abort error', () => {
   const classifyEvent = createEventClassifier()
+  markSessionBusy(classifyEvent, 'ses_abort_idle_legacy')
 
   assert.equal(
     classifyEvent({
@@ -499,6 +595,8 @@ test('abort suppression does not affect other sessions', () => {
     } as any),
     null,
   )
+
+  markSessionBusy(classifyEvent, 'ses_abort_b')
 
   const classified = classifyEvent({
     type: 'session.status',
@@ -557,6 +655,7 @@ test('classify error from session.error', () => {
 
 test('suppress immediate complete after non-abort error', () => {
   const classifyEvent = createEventClassifier()
+  markSessionBusy(classifyEvent, 'ses_error_idle')
 
   const errored = classifyEvent({
     type: 'session.error',
@@ -593,6 +692,8 @@ test('classify recognizes parentId/sessionId alias fields', () => {
     } as any),
     null,
   )
+
+  markSessionBusy(classifyEvent, 'ses_alias_title', true)
 
   const classified = classifyEvent({
     type: 'session.status',
@@ -701,10 +802,13 @@ test('session lineage updates can re-enable notifications', () => {
     properties: {
       info: {
         id: 'ses_moved',
+        parentID: undefined,
       },
     },
   } as any
   assert.equal(classifyEvent(nowRootUpdated), null)
+
+  markSessionBusy(classifyEvent, 'ses_moved')
 
   const idle = {
     type: 'session.status',
@@ -717,6 +821,46 @@ test('session lineage updates can re-enable notifications', () => {
   const classified = classifyEvent(idle)
   assert.ok(classified)
   assert.equal(classified?.event, 'complete')
+})
+
+test('partial session.updated does not clear subagent lineage', () => {
+  const classifyEvent = createEventClassifier()
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.updated',
+      properties: {
+        info: {
+          id: 'ses_sub_partial',
+          parentID: 'ses_root',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.updated',
+      properties: {
+        info: {
+          id: 'ses_sub_partial',
+          title: 'Renamed without parent field',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const attention = classifyEvent({
+    type: 'permission.asked',
+    properties: {
+      sessionID: 'ses_sub_partial',
+      permission: 'bash',
+      patterns: ['git status'],
+    },
+  } as any)
+  assert.equal(attention, null)
 })
 
 test('session.deleted evicts subagent/session caches', () => {
@@ -747,6 +891,8 @@ test('session.deleted evicts subagent/session caches', () => {
     } as any),
     null,
   )
+
+  markSessionBusy(classifyEvent, 'ses_deleted')
 
   const classified = classifyEvent({
     type: 'session.status',

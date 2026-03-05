@@ -50,7 +50,7 @@ Notes:
 - Current OpenCode `Hooks` do not expose a dispose callback; dispatcher `dispose()` exists for tests/future lifecycle hooks.
 - Host-platform command behavior is captured at module load to keep invocation semantics stable even when tests override `process.platform`.
 - Windows shell selection prefers `pwsh` then `powershell`, with fallback handling for `.cmd` wrappers and shim-based PATH entries.
-- Event classification intentionally suppresses cancel/abort terminal flows and terminal `permission.updated` / `question.updated` updates to reduce false-positive completion noise.
+- Event classification intentionally suppresses cancel/abort terminal flows, non-terminal `session.status` states (`busy` / `retry`), and acknowledgement-only prompt events (`permission.replied`, `question.replied`, `question.rejected`). Legacy `question.updated` is ignored.
 
 ## Configuration contract
 
