@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('dist-test',{recursive:true,force:true}); for (const f of ['tsconfig.tsbuildinfo','tsconfig.build.tsbuildinfo','tsconfig.test.tsbuildinfo']) { try { fs.rmSync(f,{force:true}); } catch {} }\"",
+    "clean": "node --input-type=commonjs -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('dist-test',{recursive:true,force:true}); for (const f of ['tsconfig.tsbuildinfo','tsconfig.build.tsbuildinfo','tsconfig.test.tsbuildinfo']) { try { fs.rmSync(f,{force:true}); } catch {} }\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "build:test": "tsc -p tsconfig.test.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
