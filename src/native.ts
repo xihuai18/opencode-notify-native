@@ -1,12 +1,18 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { constants } from 'node:fs'
+import { access } from 'node:fs/promises'
+import path from 'node:path'
 
 import { backendBackoffMs } from './backoff.js'
-import { debugWarn } from './debug.js'
+import { debugEnabled, debugWarn } from './debug.js'
 import { fnv1a32 } from './hash.js'
 import type { NotifyEventType, NotifySound } from './types.js'
+
+// Captured at module-load time, before any test-level overrides of
+// process.platform. Used for host-OS decisions (PATH lookup semantics,
+// executable checks, Windows fallback behavior).
+const hostPlatform: NodeJS.Platform = process.platform
 
 function stripControlChars(input: string): string {
   return input.replace(/[\u0000-\u001F\u007F]/g, '').trim()
@@ -47,124 +53,222 @@ function hashHex(input: string, length: number): string {
     .slice(0, length)
 }
 
-function run(
-  command: string,
-  args: string[],
-  options: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
-): Promise<boolean> {
-  const env = options.env ? { ...process.env, ...options.env } : process.env
-  const isWindowsHost = delimiter === ';'
-
-  type RunResult = { ok: boolean; spawnErrorCode?: string }
-
-  const resolveNodeShim = (): string | undefined => {
-    if (!isWindowsHost) return undefined
-    if (!command || command.includes('\\') || command.includes('/')) {
-      return undefined
-    }
-    const pathValue = env.PATH || ''
-    const pathEntries = pathValue
-      .split(delimiter)
-      .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
-      .filter(Boolean)
-
-    for (const entry of pathEntries) {
-      const cmdPath = join(entry, `${command}.cmd`)
-      const jsPath = join(entry, `${command}.js`)
-      if (existsSync(cmdPath) && existsSync(jsPath)) return jsPath
-    }
-    return undefined
+function windowsNotifierAppIds(): string[] {
+  const requestedSender = stripControlChars(
+    process.env.OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER || '',
+  ).toLowerCase()
+  if (requestedSender !== 'terminal') {
+    return ['Microsoft.Windows.Explorer']
   }
 
-  const runAttempt = (
-    spawnCommand: string,
-    spawnArgs: string[],
-  ): Promise<RunResult> =>
-    new Promise((resolve) => {
-      let child: ReturnType<typeof spawn>
+  // Terminal sender is opt-in because some setups can foreground Terminal on click.
+  return [
+    'Microsoft.WindowsTerminal_8wekyb3d8bbwe!App',
+    'Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe!App',
+    'Microsoft.WindowsTerminalCanary_8wekyb3d8bbwe!App',
+    'Microsoft.Windows.Explorer',
+  ]
+}
+
+async function resolveCommandInPath(
+  command: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  const pathValue = env.PATH || env.Path || ''
+  if (!pathValue) return null
+
+  const dirs = pathValue
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  if (!dirs.length) return null
+
+  const names = [command]
+  if (hostPlatform === 'win32' && !path.extname(command)) {
+    const extList = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+      .split(';')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+    for (const ext of extList) {
+      const normalized = ext.startsWith('.') ? ext : `.${ext}`
+      names.push(`${command}${normalized.toLowerCase()}`)
+      names.push(`${command}${normalized.toUpperCase()}`)
+    }
+  }
+
+  for (const rawDir of dirs) {
+    // Some Windows setups include quoted PATH entries (rare but valid).
+    const dir = rawDir.replace(/^"|"$/g, '')
+    for (const name of names) {
       try {
-        child = spawn(spawnCommand, spawnArgs, {
-          stdio: ['ignore', 'ignore', 'ignore'],
-          windowsHide: true,
-          env,
-        })
-      } catch (error) {
-        const code =
-          typeof error === 'object' && error !== null && 'code' in error
-            ? String((error as { code?: unknown }).code || '')
-            : ''
-        resolve({ ok: false, spawnErrorCode: code || undefined })
-        return
+        await access(
+          path.join(dir, name),
+          hostPlatform === 'win32' ? constants.F_OK : constants.X_OK,
+        )
+        return path.join(dir, name)
+      } catch {
+        // Continue searching PATH.
       }
-      // Best-effort: do not keep OpenCode running just to finish a notification.
-      child.unref?.()
+    }
+  }
+  return null
+}
 
-      let done = false
-      let exited = false
-      let hardKill: NodeJS.Timeout | undefined
+type RunOptions = {
+  timeoutMs?: number
+  env?: NodeJS.ProcessEnv
+  captureStderr?: boolean
+}
 
-      const settle = (result: RunResult): void => {
-        if (done) return
-        done = true
-        resolve(result)
-      }
+type RunResult = {
+  ok: boolean
+  stderr: string
+  spawnErrorCode?: string
+}
 
-      const timer =
-        typeof options.timeoutMs === 'number' && options.timeoutMs > 0
-          ? setTimeout(() => {
-              if (done) return
+function runDetailed(
+  command: string,
+  args: string[],
+  options: RunOptions = {},
+): Promise<RunResult> {
+  return new Promise((resolve) => {
+    const captureStderr = options.captureStderr || debugEnabled()
+    const env = options.env ? { ...process.env, ...options.env } : process.env
+    let child: ReturnType<typeof spawn>
+    let stderrOutput = ''
+    try {
+      child = spawn(command, args, {
+        stdio: ['ignore', 'ignore', captureStderr ? 'pipe' : 'ignore'],
+        windowsHide: true,
+        env,
+      })
+    } catch (error) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: unknown }).code || '')
+          : ''
+      debugWarn(
+        `Failed to spawn ${command}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+      resolve({ ok: false, stderr: '', spawnErrorCode: code || undefined })
+      return
+    }
+    // Best-effort: do not keep OpenCode running just to finish a notification.
+    child.unref?.()
+
+    if (captureStderr && child.stderr) {
+      child.stderr.on('data', (chunk) => {
+        if (stderrOutput.length >= 4096) return
+        stderrOutput += String(chunk)
+      })
+    }
+
+    let done = false
+    let exited = false
+    let hardKill: NodeJS.Timeout | undefined
+
+    const settle = (result: RunResult): void => {
+      if (done) return
+      done = true
+      resolve(result)
+    }
+
+    const timer =
+      typeof options.timeoutMs === 'number' && options.timeoutMs > 0
+        ? setTimeout(() => {
+            if (done) return
+            try {
+              child.kill()
+            } catch (error) {
+              debugWarn(
+                `Failed to terminate process ${command}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              )
+            }
+            hardKill = setTimeout(() => {
+              if (exited || child.exitCode !== null) return
               try {
-                child.kill()
+                child.kill('SIGKILL')
               } catch (error) {
                 debugWarn(
-                  `Failed to terminate process ${command}: ${
+                  `Failed to force-kill process ${command}: ${
                     error instanceof Error ? error.message : String(error)
                   }`,
                 )
               }
-              hardKill = setTimeout(() => {
-                if (exited || child.exitCode !== null) return
-                try {
-                  child.kill('SIGKILL')
-                } catch (error) {
-                  debugWarn(
-                    `Failed to force-kill process ${command}: ${
-                      error instanceof Error ? error.message : String(error)
-                    }`,
-                  )
-                }
-              }, 250)
-              hardKill.unref?.()
-              settle({ ok: false })
-            }, options.timeoutMs)
-          : undefined
+            }, 250)
+            hardKill.unref?.()
+            settle({ ok: false, stderr: stderrOutput })
+          }, options.timeoutMs)
+        : undefined
 
-      timer?.unref?.()
+    timer?.unref?.()
 
-      child.on('error', (error) => {
-        exited = true
-        if (timer) clearTimeout(timer)
-        if (hardKill) clearTimeout(hardKill)
-        const code =
-          typeof error === 'object' && error !== null && 'code' in error
-            ? String((error as { code?: unknown }).code || '')
-            : ''
-        settle({ ok: false, spawnErrorCode: code || undefined })
-      })
-      child.on('close', (code) => {
-        exited = true
-        if (timer) clearTimeout(timer)
-        if (hardKill) clearTimeout(hardKill)
-        settle({ ok: code === 0 })
+    const logStderrIfAny = (): void => {
+      if (!captureStderr) return
+      const message = stderrOutput.trim()
+      if (!message) return
+      debugWarn(`${command} stderr: ${message.slice(0, 2048)}`)
+    }
+
+    child.on('error', (error) => {
+      exited = true
+      if (timer) clearTimeout(timer)
+      if (hardKill) clearTimeout(hardKill)
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: unknown }).code || '')
+          : ''
+      logStderrIfAny()
+      settle({
+        ok: false,
+        stderr: stderrOutput,
+        spawnErrorCode: code || undefined,
       })
     })
+    child.on('close', (code) => {
+      exited = true
+      if (timer) clearTimeout(timer)
+      if (hardKill) clearTimeout(hardKill)
+      if (code !== 0) logStderrIfAny()
+      settle({ ok: code === 0, stderr: stderrOutput })
+    })
+  })
+}
 
-  return runAttempt(command, args).then(async (first) => {
+async function resolveNodeShim(
+  command: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  if (hostPlatform !== 'win32') return null
+  if (!command || command.includes('\\') || command.includes('/')) {
+    return null
+  }
+
+  const cmdPath = await resolveCommandInPath(`${command}.cmd`, env)
+  if (!cmdPath) return null
+
+  const jsPath = await resolveCommandInPath(`${command}.js`, env)
+  if (!jsPath) return null
+
+  return jsPath
+}
+
+function run(
+  command: string,
+  args: string[],
+  options: RunOptions = {},
+): Promise<boolean> {
+  const env = options.env ? { ...process.env, ...options.env } : process.env
+
+  return runDetailed(command, args, options).then(async (first) => {
     if (first.ok) return true
+
     const shouldRetryWithShell =
-      isWindowsHost &&
-      !command.includes('\\') &&
-      !command.includes('/') &&
+      hostPlatform === 'win32' &&
       (first.spawnErrorCode === 'ENOENT' || first.spawnErrorCode === 'EINVAL')
 
     if (!shouldRetryWithShell) {
@@ -177,13 +281,13 @@ function run(
       return false
     }
 
-    const nodeShim = resolveNodeShim()
+    const nodeShim = await resolveNodeShim(command, env)
     if (nodeShim) {
-      const shimResult = await runAttempt(process.execPath, [
-        nodeShim,
-        command,
-        ...args,
-      ])
+      const shimResult = await runDetailed(
+        process.execPath,
+        [nodeShim, command, ...args],
+        { ...options, env },
+      )
       if (!shimResult.spawnErrorCode) return shimResult.ok
       visibleWarnOnce(
         `spawn:${command}`,
@@ -191,18 +295,19 @@ function run(
       )
     }
 
-    const cmdFallbackCommand =
+    const cmdFallbackCommandRaw =
       command.includes('.') || command.includes('\\') || command.includes('/')
         ? command
         : `${command}.cmd`
+    const cmdFallbackCommand = cmdFallbackCommandRaw.includes(' ')
+      ? `"${cmdFallbackCommandRaw}"`
+      : cmdFallbackCommandRaw
 
-    const second = await runAttempt(env.ComSpec || 'cmd.exe', [
-      '/d',
-      '/s',
-      '/c',
-      cmdFallbackCommand,
-      ...args,
-    ])
+    const second = await runDetailed(
+      env.ComSpec || 'cmd.exe',
+      ['/d', '/s', '/c', cmdFallbackCommand, ...args],
+      { ...options, env },
+    )
     if (second.ok) return true
     if (second.spawnErrorCode) {
       visibleWarnOnce(
@@ -231,7 +336,7 @@ function normalizeSound(
 type BackendState = {
   linuxNotifySendDisabledUntil: number
   linuxNotifySendFailures: number
-  linuxNotifySendMode: 'auto' | 'long' | 'short' | 'plain'
+  linuxNotifySendMode: 'auto' | 'long' | 'short' | 'plain' | 'minimal'
   windowsNotifyDisabledUntil: number
   windowsNotifyFailures: number
   windowsPreferredShell: '' | 'pwsh' | 'powershell'
@@ -318,17 +423,15 @@ async function notifyWindows(
   const now = Date.now()
   if (now < state.windowsNotifyDisabledUntil) return false
 
-  // Do not bind to an app that would spawn a new window on click.
-  // Explorer is always running and generally results in a no-op activation.
-  // Keep this list hardcoded. If made user-configurable, PowerShell escaping
-  // must be revisited (newlines and other edge cases become injection risks).
-  const notifierAppIds = ['Microsoft.Windows.Explorer']
+  // Explorer remains the default sender to preserve no-op click behavior.
+  // Terminal sender branding is available via explicit env opt-in.
+  const notifierAppIds = windowsNotifierAppIds()
 
   const toastGroup = 'opencode-notify'
   // Tag length limits vary across Windows versions; 16 chars is the safest.
   const toastTag = hashHex(group, 16)
-  // Use background activation to avoid launching a new app window when the user clicks.
-  const xml = `<toast activationType="background"><visual><binding template="ToastGeneric">${windowsTextNodes(
+  // Use background activation with empty launch payload to keep click no-op.
+  const xml = `<toast activationType="background" launch=""><visual><binding template="ToastGeneric">${windowsTextNodes(
     title,
     body,
   )}</binding></visual>${windowsAudioNode(sound)}</toast>`
@@ -345,13 +448,16 @@ async function notifyWindows(
     '$xml = New-Object Windows.Data.Xml.Dom.XmlDocument',
     '$xml.LoadXml($xmlString)',
     '$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)',
-    `$toast.Tag = '${toastTag}'`,
-    `$toast.Group = '${toastGroup}'`,
+    `$toastTag = '${toastTag}'`,
+    `$toastGroup = '${toastGroup}'`,
+    '$toast.Tag = $toastTag',
+    '$toast.Group = $toastGroup',
     `$appIds = @(${appIds})`,
     '$shown = $false',
-    // Some AUMIDs throw but still post the toast; treat "posted" errors as success.
-    'foreach ($appId in $appIds) { if ($shown) { break }; try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast); $shown = $true } catch { $msg = $_.Exception.Message; if ($msg -match "posted" -or $msg -match "publish" -or $msg -match "发布") { $shown = $true } } }',
-    'if (-not $shown) { try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier().Show($toast); $shown = $true } catch {} }',
+    // Verify each sender by history when possible, but trust Show() when
+    // history APIs are unavailable.
+    'foreach ($appId in $appIds) { if ($shown) { break }; $showAttempted = $false; try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast); $showAttempted = $true } catch {} ; try { $history = [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory($appId); foreach ($item in $history) { if ($item.Tag -eq $toastTag -and $item.Group -eq $toastGroup) { $shown = $true; break } } } catch {} ; if (-not $shown -and $showAttempted) { $shown = $true } }',
+    'if (-not $shown) { $showAttempted = $false; try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier().Show($toast); $showAttempted = $true } catch {} ; try { $history = [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory(); foreach ($item in $history) { if ($item.Tag -eq $toastTag -and $item.Group -eq $toastGroup) { $shown = $true; break } } } catch {} ; if (-not $shown -and $showAttempted) { $shown = $true } }',
     "if (-not $shown) { throw 'ToastNotificationManager failed to show toast' }",
   ].join('; ')
 
@@ -360,18 +466,50 @@ async function notifyWindows(
     '-NonInteractive',
     '-ExecutionPolicy',
     'Bypass',
-    '-Command',
-    script,
+    // -EncodedCommand accepts a base64-encoded UTF-16LE string.  This
+    // avoids all cmd.exe metacharacter issues (the script contains "> $null",
+    // parentheses, pipes, etc.) that would break with shell: true + -Command.
+    '-EncodedCommand',
+    Buffer.from(script, 'utf16le').toString('base64'),
   ]
-  const primary = state.windowsPreferredShell || 'pwsh'
-  const secondary = primary === 'pwsh' ? 'powershell' : 'pwsh'
-  const shells: Array<'pwsh' | 'powershell'> = [primary, secondary]
+  type ShellKind = 'pwsh' | 'powershell'
+  type ShellCandidate = { kind: ShellKind; command: string }
+
+  const resolveShell = async (kind: ShellKind): Promise<ShellCandidate> => {
+    const resolved = await resolveCommandInPath(kind, process.env)
+    // On Windows, "powershell" is often found via system directories before
+    // PATH. When we want a PATH override (tests, custom shims), spawning the
+    // resolved full path is the only deterministic option.
+    return { kind, command: resolved || kind }
+  }
+
+  let shells: ShellCandidate[]
+  if (state.windowsPreferredShell) {
+    const first = state.windowsPreferredShell
+    const second: ShellKind = first === 'pwsh' ? 'powershell' : 'pwsh'
+    shells = await Promise.all([resolveShell(first), resolveShell(second)])
+  } else {
+    const [pwsh, powershell] = await Promise.all([
+      resolveShell('pwsh'),
+      resolveShell('powershell'),
+    ])
+
+    const hasPwsh = pwsh.command !== 'pwsh'
+    const hasPowershell = powershell.command !== 'powershell'
+
+    // If PATH lookups fail, still attempt both: one may be reachable via
+    // system search paths or app execution aliases.
+    if (hasPwsh && hasPowershell) shells = [pwsh, powershell]
+    else if (hasPwsh) shells = [pwsh]
+    else if (hasPowershell) shells = [powershell]
+    else shells = [pwsh, powershell]
+  }
 
   let ok = false
   for (const shell of shells) {
-    ok = await run(shell, args, { timeoutMs: 8_000 })
+    ok = await run(shell.command, args, { timeoutMs: 8_000 })
     if (ok) {
-      state.windowsPreferredShell = shell
+      state.windowsPreferredShell = shell.kind
       break
     }
   }
@@ -393,18 +531,12 @@ async function notifyMac(
   body: string,
   event: NotifyEventType,
   sound: boolean | string,
-  group: string,
+  _group: string,
 ): Promise<boolean> {
   const now = Date.now()
   if (now < state.macNotifyDisabledUntil) return false
 
   const mapped = macSoundName(event, sound)
-
-  const notifierArgs = ['-title', title, '-message', body, '-group', group]
-  if (sound !== false) notifierArgs.push('-sound', mapped || 'default')
-  // No click handler (no-op on click).
-
-  let ok = await run('terminal-notifier', notifierArgs, { timeoutMs: 8000 })
 
   const script = [
     'on run argv',
@@ -422,15 +554,17 @@ async function notifyMac(
     'end run',
   ].join('\n')
 
-  if (!ok) {
-    // `system attribute` decodes UTF-8 environment values incorrectly on many
-    // macOS setups. Pass user text via argv to preserve Unicode.
-    ok = await run(
-      'osascript',
-      ['-e', script, '--', title, body, sound === false ? '' : mapped],
-      { timeoutMs: 8000 },
-    )
-  }
+  // `system attribute` decodes UTF-8 environment values incorrectly on many
+  // macOS setups. Pass user text via argv to preserve Unicode.
+  // `_group` is intentionally ignored: AppleScript notifications do not
+  // support backend-level replace/group semantics.
+  // `display notification` does not expose click-action controls.
+  // We keep behavior best-effort by not registering any open/activate action.
+  const ok = await run(
+    'osascript',
+    ['-e', script, '--', title, body, sound === false ? '' : mapped],
+    { timeoutMs: 8000 },
+  )
 
   if (ok) {
     state.macNotifyFailures = 0
@@ -473,14 +607,26 @@ async function notifyLinux(
     `string:x-canonical-private-synchronous:opencode-${replaceId}`,
     '-h',
     `string:x-dunst-stack-tag:opencode-${replaceId}`,
+    '--',
     safeTitle,
     safeBody,
   ]
 
   // Some notify-send builds only support a subset of replacement flags.
-  const shortArgs = [...args]
-  const replaceIdx = shortArgs.findIndex((x) => x.startsWith('--replace-id='))
-  if (replaceIdx >= 0) shortArgs.splice(replaceIdx, 1, '-r', String(replaceId))
+  // Keep short mode free of custom hints so it works on stricter variants.
+  const shortArgs = [
+    '-a',
+    'opencode',
+    '-u',
+    urgency,
+    '-t',
+    String(timeoutMs),
+    '-r',
+    String(replaceId),
+    '--',
+    safeTitle,
+    safeBody,
+  ]
   const plainArgs = [
     '-a',
     'opencode',
@@ -488,20 +634,24 @@ async function notifyLinux(
     urgency,
     '-t',
     String(timeoutMs),
+    '--',
     safeTitle,
     safeBody,
   ]
+  const minimalArgs = [safeTitle, safeBody]
 
   const modeArgs = {
     long: args,
     short: shortArgs,
     plain: plainArgs,
+    minimal: minimalArgs,
   }
 
-  const fallbackModes: Array<'long' | 'short' | 'plain'> = [
+  const fallbackModes: Array<'long' | 'short' | 'plain' | 'minimal'> = [
     'long',
     'short',
     'plain',
+    'minimal',
   ]
   const modes =
     state.linuxNotifySendMode === 'auto'

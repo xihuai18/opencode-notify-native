@@ -1,6 +1,6 @@
 # Design: opencode-notify-native
 
-As-of: 2026-03-03
+As-of: 2026-03-05
 
 ## Product decision
 
@@ -33,8 +33,8 @@ Evidence source: local OpenCode source in `opencode/` and official docs.
 4. Pass through dispatcher for collapse/cooldown.
 5. Send with platform backend:
    - Windows toast (PowerShell + WinRT)
-   - macOS (`terminal-notifier`, fallback `osascript`)
-   - Linux (`notify-send`)
+   - macOS (`osascript`)
+   - Linux (`notify-send`, with compatibility fallback argument modes)
 
 ## Design constraints
 
@@ -48,6 +48,9 @@ Notes:
 - Collapse timers are `unref()`'d to keep shutdown fast; the last pending collapsed notification may be dropped on exit.
 - Backend backoff state is per notifier instance (created at plugin init) so separate plugin instances do not share suppression state.
 - Current OpenCode `Hooks` do not expose a dispose callback; dispatcher `dispose()` exists for tests/future lifecycle hooks.
+- Host-platform command behavior is captured at module load to keep invocation semantics stable even when tests override `process.platform`.
+- Windows shell selection prefers `pwsh` then `powershell`, with fallback handling for `.cmd` wrappers and shim-based PATH entries.
+- Event classification intentionally suppresses cancel/abort terminal flows and terminal `permission.updated` / `question.updated` updates to reduce false-positive completion noise.
 
 ## Configuration contract
 

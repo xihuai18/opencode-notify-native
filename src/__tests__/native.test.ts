@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import {
+  access,
   chmod,
   mkdtemp,
   readFile,
@@ -19,18 +21,22 @@ import {
   windowsAudioNode,
 } from "../native.js";
 
-const shellWrapper = '#!/bin/sh\nexec node "$0.js" "$(basename "$0")" "$@"\n';
-const cmdWrapper = '@echo off\r\nnode "%~dpn0.js" "%~n0" %*\r\n';
-
 async function writeWrappedCommand(tmp: string, name: string, script: string) {
+  const nodePathForShell = process.execPath.replace(/"/g, '\\"');
+  const nodePathForCmd = process.execPath.replace(/"/g, '""');
+  const shellWrapper = `#!/bin/sh\nname=\${0##*/}\nexec "${nodePathForShell}" "$0.js" "$name" "$@"\n`;
+  const cmdWrapper = `@echo off\r\n"${nodePathForCmd}" "%~dpn0.js" "%~n0" %*\r\n`;
+
   await writeFile(path.join(tmp, `${name}.js`), script, "utf8");
-  const shellPath = path.join(tmp, name);
-  await writeFile(shellPath, shellWrapper, "utf8");
   await writeFile(path.join(tmp, `${name}.cmd`), cmdWrapper, "utf8");
-  try {
-    await chmod(shellPath, 0o755);
-  } catch {
-    // Best-effort; Windows does not rely on POSIX executable bits.
+  if (process.platform !== "win32") {
+    const shellPath = path.join(tmp, name);
+    await writeFile(shellPath, shellWrapper, "utf8");
+    try {
+      await chmod(shellPath, 0o755);
+    } catch {
+      // Best-effort; Windows does not rely on POSIX executable bits.
+    }
   }
 }
 
@@ -39,20 +45,11 @@ async function createFakeMacCommands(tmp: string): Promise<void> {
 const { appendFileSync } = require('node:fs')
 const cmd = process.argv[2]
 const args = process.argv.slice(3)
-const env = {
-  OC_NOTIFY_TITLE: process.env.OC_NOTIFY_TITLE || '',
-  OC_NOTIFY_BODY: process.env.OC_NOTIFY_BODY || '',
-  OC_NOTIFY_SOUND: process.env.OC_NOTIFY_SOUND || '',
-}
-appendFileSync(process.env.OC_TEST_NOTIFY_LOG, JSON.stringify({ cmd, args, env }) + '\\n')
-const ok =
-  cmd === 'terminal-notifier'
-    ? process.env.OC_TEST_TERMINAL_NOTIFIER_OK === '1'
-    : process.env.OC_TEST_OSASCRIPT_OK === '1'
+appendFileSync(process.env.OC_TEST_NOTIFY_LOG, JSON.stringify({ cmd, args }) + '\\n')
+const ok = cmd === 'osascript' && process.env.OC_TEST_OSASCRIPT_OK === '1'
 process.exit(ok ? 0 : 1)
 `;
 
-  await writeWrappedCommand(tmp, "terminal-notifier", recorder);
   await writeWrappedCommand(tmp, "osascript", recorder);
 }
 
@@ -66,7 +63,9 @@ let mode = ''
 if (cmd === 'notify-send') {
   if (args.some((arg) => arg.startsWith('--replace-id='))) mode = 'long'
   else if (args.includes('-r')) mode = 'short'
-  else mode = 'plain'
+  else if (args.includes('-a') || args.includes('-u') || args.includes('-t'))
+    mode = 'plain'
+  else mode = 'minimal'
 }
 
 appendFileSync(
@@ -91,6 +90,29 @@ process.exit(1)
 
   await writeWrappedCommand(tmp, "notify-send", recorder);
   await writeWrappedCommand(tmp, "canberra-gtk-play", recorder);
+}
+
+async function createFakeWindowsCommands(tmp: string): Promise<void> {
+  const recorder = `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs')
+const cmd = process.argv[2]
+const args = process.argv.slice(3)
+
+appendFileSync(process.env.OC_TEST_NOTIFY_LOG, JSON.stringify({ cmd, args }) + '\\n')
+
+if (cmd === 'pwsh') {
+  process.exit(process.env.OC_TEST_PWSH_OK === '1' ? 0 : 1)
+}
+
+if (cmd === 'powershell') {
+  process.exit(process.env.OC_TEST_POWERSHELL_OK === '1' ? 0 : 1)
+}
+
+process.exit(1)
+`;
+
+  await writeWrappedCommand(tmp, "pwsh", recorder);
+  await writeWrappedCommand(tmp, "powershell", recorder);
 }
 
 async function readLog(file: string): Promise<any[]> {
@@ -129,23 +151,67 @@ async function waitForLogCount(
   return readLog(file);
 }
 
+async function commandInPathForTest(
+  command: string,
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  const pathValue = env.PATH || env.Path || "";
+  if (!pathValue) return false;
+
+  const dirs = pathValue
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (!dirs.length) return false;
+
+  const names = [command];
+  if (process.platform === "win32" && !path.extname(command)) {
+    const extList = (env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+      .split(";")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    for (const ext of extList) {
+      const normalized = ext.startsWith(".") ? ext : `.${ext}`;
+      names.push(`${command}${normalized.toLowerCase()}`);
+      names.push(`${command}${normalized.toUpperCase()}`);
+    }
+  }
+
+  for (const dir of dirs) {
+    for (const name of names) {
+      try {
+        await access(
+          path.join(dir, name),
+          process.platform === "win32" ? constants.F_OK : constants.X_OK,
+        );
+        return true;
+      } catch {
+        // Continue searching PATH.
+      }
+    }
+  }
+  return false;
+}
+
 async function setupMacEnv(
   binDir: string,
   logFile: string,
   options: {
-    terminalNotifierOk: "0" | "1";
     osascriptOk: "0" | "1";
   },
 ): Promise<() => void> {
   const prevPath = process.env.PATH;
+  const prevPathAlias = process.env.Path;
   const prevLog = process.env.OC_TEST_NOTIFY_LOG;
-  const prevTn = process.env.OC_TEST_TERMINAL_NOTIFIER_OK;
   const prevOsa = process.env.OC_TEST_OSASCRIPT_OK;
   const prevPlatform = process.platform;
+  const mergedPath = [binDir, prevPath || prevPathAlias || ""]
+    .filter(Boolean)
+    .join(path.delimiter);
 
-  process.env.PATH = `${binDir}${path.delimiter}${prevPath || ""}`;
+  process.env.PATH = mergedPath;
+  process.env.Path = mergedPath;
   process.env.OC_TEST_NOTIFY_LOG = logFile;
-  process.env.OC_TEST_TERMINAL_NOTIFIER_OK = options.terminalNotifierOk;
   process.env.OC_TEST_OSASCRIPT_OK = options.osascriptOk;
   Object.defineProperty(process, "platform", { value: "darwin" });
 
@@ -153,10 +219,10 @@ async function setupMacEnv(
     Object.defineProperty(process, "platform", { value: prevPlatform });
     if (prevPath === undefined) delete process.env.PATH;
     else process.env.PATH = prevPath;
+    if (prevPathAlias === undefined) delete process.env.Path;
+    else process.env.Path = prevPathAlias;
     if (prevLog === undefined) delete process.env.OC_TEST_NOTIFY_LOG;
     else process.env.OC_TEST_NOTIFY_LOG = prevLog;
-    if (prevTn === undefined) delete process.env.OC_TEST_TERMINAL_NOTIFIER_OK;
-    else process.env.OC_TEST_TERMINAL_NOTIFIER_OK = prevTn;
     if (prevOsa === undefined) delete process.env.OC_TEST_OSASCRIPT_OK;
     else process.env.OC_TEST_OSASCRIPT_OK = prevOsa;
   };
@@ -171,12 +237,17 @@ async function setupLinuxEnv(
   },
 ): Promise<() => void> {
   const prevPath = process.env.PATH;
+  const prevPathAlias = process.env.Path;
   const prevLog = process.env.OC_TEST_NOTIFY_LOG;
   const prevNotifySendOk = process.env.OC_TEST_NOTIFY_SEND_OK;
   const prevCanberra = process.env.OC_TEST_CANBERRA_OK;
   const prevPlatform = process.platform;
+  const mergedPath = [binDir, prevPath || prevPathAlias || ""]
+    .filter(Boolean)
+    .join(path.delimiter);
 
-  process.env.PATH = `${binDir}${path.delimiter}${prevPath || ""}`;
+  process.env.PATH = mergedPath;
+  process.env.Path = mergedPath;
   process.env.OC_TEST_NOTIFY_LOG = logFile;
   process.env.OC_TEST_NOTIFY_SEND_OK = options.notifySendOk;
   process.env.OC_TEST_CANBERRA_OK = options.canberraOk;
@@ -186,6 +257,8 @@ async function setupLinuxEnv(
     Object.defineProperty(process, "platform", { value: prevPlatform });
     if (prevPath === undefined) delete process.env.PATH;
     else process.env.PATH = prevPath;
+    if (prevPathAlias === undefined) delete process.env.Path;
+    else process.env.Path = prevPathAlias;
     if (prevLog === undefined) delete process.env.OC_TEST_NOTIFY_LOG;
     else process.env.OC_TEST_NOTIFY_LOG = prevLog;
     if (prevNotifySendOk === undefined)
@@ -193,6 +266,54 @@ async function setupLinuxEnv(
     else process.env.OC_TEST_NOTIFY_SEND_OK = prevNotifySendOk;
     if (prevCanberra === undefined) delete process.env.OC_TEST_CANBERRA_OK;
     else process.env.OC_TEST_CANBERRA_OK = prevCanberra;
+  };
+}
+
+async function setupWindowsEnv(
+  binDir: string,
+  logFile: string,
+  options: {
+    pwshOk: "0" | "1";
+    powershellOk: "0" | "1";
+    sender?: string;
+  },
+): Promise<() => void> {
+  const prevPath = process.env.PATH;
+  const prevPathAlias = process.env.Path;
+  const prevLog = process.env.OC_TEST_NOTIFY_LOG;
+  const prevPwsh = process.env.OC_TEST_PWSH_OK;
+  const prevPowerShell = process.env.OC_TEST_POWERSHELL_OK;
+  const prevSender = process.env.OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER;
+  const prevPlatform = process.platform;
+  const mergedPath = [binDir, prevPath || prevPathAlias || ""]
+    .filter(Boolean)
+    .join(path.delimiter);
+
+  process.env.PATH = mergedPath;
+  process.env.Path = mergedPath;
+  process.env.OC_TEST_NOTIFY_LOG = logFile;
+  process.env.OC_TEST_PWSH_OK = options.pwshOk;
+  process.env.OC_TEST_POWERSHELL_OK = options.powershellOk;
+  if (options.sender === undefined)
+    delete process.env.OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER;
+  else process.env.OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER = options.sender;
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  return () => {
+    Object.defineProperty(process, "platform", { value: prevPlatform });
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
+    if (prevPathAlias === undefined) delete process.env.Path;
+    else process.env.Path = prevPathAlias;
+    if (prevLog === undefined) delete process.env.OC_TEST_NOTIFY_LOG;
+    else process.env.OC_TEST_NOTIFY_LOG = prevLog;
+    if (prevPwsh === undefined) delete process.env.OC_TEST_PWSH_OK;
+    else process.env.OC_TEST_PWSH_OK = prevPwsh;
+    if (prevPowerShell === undefined) delete process.env.OC_TEST_POWERSHELL_OK;
+    else process.env.OC_TEST_POWERSHELL_OK = prevPowerShell;
+    if (prevSender === undefined)
+      delete process.env.OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER;
+    else process.env.OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER = prevSender;
   };
 }
 
@@ -230,7 +351,190 @@ test("macSoundName maps boolean and named sounds", () => {
 });
 
 test(
-  "darwin notifier uses terminal-notifier when available",
+  "windows notifier falls back from pwsh to powershell",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeWindowsCommands(binDir);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupWindowsEnv(binDir, logFile, {
+      pwshOk: "0",
+      powershellOk: "1",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "attention",
+          sound: true,
+          group: "windows-fallback",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 2);
+      assert.equal(log[0].cmd, "pwsh");
+      assert.equal(log[1].cmd, "powershell");
+
+      const commandIdx = log[1].args.indexOf("-EncodedCommand");
+      assert.ok(commandIdx >= 0);
+      const script = Buffer.from(
+        String(log[1].args[commandIdx + 1] || ""),
+        "base64",
+      ).toString("utf16le");
+      const payloadMatch = script.match(/FromBase64String\('([^']+)'\)/);
+      assert.ok(payloadMatch);
+      const toastXml = Buffer.from(payloadMatch[1], "base64").toString("utf8");
+      assert.match(toastXml, /activationType="background"/);
+      assert.match(toastXml, /launch=""/);
+      assert.match(script, /Microsoft\.Windows\.Explorer/);
+      assert.doesNotMatch(
+        script,
+        /Microsoft\.WindowsTerminal_8wekyb3d8bbwe!App/,
+      );
+      assert.match(script, /History\.GetHistory/);
+      assert.doesNotMatch(script, /-match \"posted\"/);
+      assert.doesNotMatch(script, /-match \"publish\"/);
+      assert.doesNotMatch(script, /发布/);
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
+
+test(
+  "windows notifier uses pwsh when available",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeWindowsCommands(binDir);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupWindowsEnv(binDir, logFile, {
+      pwshOk: "1",
+      powershellOk: "1",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "complete",
+          sound: true,
+          group: "windows-primary",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 1);
+      assert.equal(log[0].cmd, "pwsh");
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
+
+test(
+  "windows notifier prefers powershell when pwsh is missing",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeWindowsCommands(binDir);
+    await Promise.allSettled([
+      unlink(path.join(binDir, "pwsh")),
+      unlink(path.join(binDir, "pwsh.cmd")),
+      unlink(path.join(binDir, "pwsh.js")),
+    ]);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupWindowsEnv(binDir, logFile, {
+      pwshOk: "0",
+      powershellOk: "1",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "complete",
+          sound: true,
+          group: "windows-missing-pwsh",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 1);
+      assert.equal(log[0].cmd, "powershell");
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
+
+test(
+  "windows notifier can prefer terminal sender with explicit env opt-in",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeWindowsCommands(binDir);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupWindowsEnv(binDir, logFile, {
+      pwshOk: "1",
+      powershellOk: "1",
+      sender: "terminal",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "attention",
+          sound: true,
+          group: "windows-terminal-sender",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 1);
+      const commandIdx = log[0].args.indexOf("-EncodedCommand");
+      assert.ok(commandIdx >= 0);
+      const script = Buffer.from(
+        String(log[0].args[commandIdx + 1] || ""),
+        "base64",
+      ).toString("utf16le");
+      const terminalIdIdx = script.indexOf(
+        "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",
+      );
+      const explorerIdIdx = script.indexOf("Microsoft.Windows.Explorer");
+      assert.ok(terminalIdIdx >= 0);
+      assert.ok(explorerIdIdx > terminalIdIdx);
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
+
+test(
+  "darwin notifier uses osascript with expected sound mapping",
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
@@ -238,7 +542,6 @@ test(
     await createFakeMacCommands(binDir);
     await writeFile(logFile, "", "utf8");
     const restore = await setupMacEnv(binDir, logFile, {
-      terminalNotifierOk: "1",
       osascriptOk: "1",
     });
 
@@ -257,9 +560,13 @@ test(
 
       const log = await readLog(logFile);
       assert.equal(log.length, 1);
-      assert.equal(log[0].cmd, "terminal-notifier");
-      assert.ok(log[0].args.includes("-sound"));
-      assert.ok(log[0].args.includes("Glass"));
+      assert.equal(log[0].cmd, "osascript");
+      assert.equal(log[0].args[0], "-e");
+      assert.match(log[0].args[1], /display notification/);
+      assert.equal(log[0].args[2], "--");
+      assert.equal(log[0].args[3], "Title");
+      assert.equal(log[0].args[4], "Body");
+      assert.equal(log[0].args[5], "Glass");
     } finally {
       restore();
       await cleanupTmpDir(binDir);
@@ -268,7 +575,7 @@ test(
 );
 
 test(
-  "darwin notifier falls back to osascript and respects sound false",
+  "darwin notifier uses osascript and respects sound false",
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
@@ -276,7 +583,6 @@ test(
     await createFakeMacCommands(binDir);
     await writeFile(logFile, "", "utf8");
     const restore = await setupMacEnv(binDir, logFile, {
-      terminalNotifierOk: "0",
       osascriptOk: "1",
     });
 
@@ -294,20 +600,14 @@ test(
       assert.equal(ok, true);
 
       const log = await readLog(logFile);
-      assert.equal(log.length, 2);
-      assert.equal(log[0].cmd, "terminal-notifier");
-      assert.ok(!log[0].args.includes("-sound"));
-      const groupIdx = log[0].args.indexOf("-group");
-      assert.ok(groupIdx >= 0);
-      assert.equal(log[0].args[groupIdx + 1].length, 200);
-
-      assert.equal(log[1].cmd, "osascript");
-      assert.equal(log[1].args[0], "-e");
-      assert.match(log[1].args[1], /\nend run$/);
-      assert.equal(log[1].args[2], "--");
-      assert.equal(log[1].args[3], "OpenCode · 测试");
-      assert.equal(log[1].args[4], "Body · 任务完成");
-      assert.equal(log[1].args[5], "");
+      assert.equal(log.length, 1);
+      assert.equal(log[0].cmd, "osascript");
+      assert.equal(log[0].args[0], "-e");
+      assert.match(log[0].args[1], /\nend run$/);
+      assert.equal(log[0].args[2], "--");
+      assert.equal(log[0].args[3], "OpenCode · 测试");
+      assert.equal(log[0].args[4], "Body · 任务完成");
+      assert.equal(log[0].args[5], "");
     } finally {
       restore();
       await cleanupTmpDir(binDir);
@@ -316,19 +616,14 @@ test(
 );
 
 test(
-  "darwin notifier falls back when terminal-notifier is missing",
+  "darwin notifier emits a single osascript command",
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
     const logFile = path.join(binDir, "notify.log");
     await createFakeMacCommands(binDir);
-    await Promise.allSettled([
-      unlink(path.join(binDir, "terminal-notifier")),
-      unlink(path.join(binDir, "terminal-notifier.cmd")),
-    ]);
     await writeFile(logFile, "", "utf8");
     const restore = await setupMacEnv(binDir, logFile, {
-      terminalNotifierOk: "1",
       osascriptOk: "1",
     });
 
@@ -338,9 +633,9 @@ test(
         notify({
           title: "Title",
           body: "Body",
-          event: "complete",
+          event: "attention",
           sound: true,
-          group: "group-missing-tn",
+          group: "mac-sound-retry",
         }),
       );
       assert.equal(ok, true);
@@ -356,7 +651,7 @@ test(
 );
 
 test(
-  "darwin notifier backs off after repeated backend failures",
+  "darwin notifier backs off after repeated osascript failures",
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
@@ -364,7 +659,6 @@ test(
     await createFakeMacCommands(binDir);
     await writeFile(logFile, "", "utf8");
     const restore = await setupMacEnv(binDir, logFile, {
-      terminalNotifierOk: "0",
       osascriptOk: "0",
     });
 
@@ -391,13 +685,60 @@ test(
       assert.equal(second, false);
 
       const log = await readLog(logFile);
-      assert.equal(log.length, 2);
-      assert.equal(log[0].cmd, "terminal-notifier");
-      assert.equal(log[1].cmd, "osascript");
+      assert.equal(log.length, 1);
+      assert.equal(log[0].cmd, "osascript");
     } finally {
       restore();
       await cleanupTmpDir(binDir);
     }
+  },
+);
+
+test(
+  "darwin integration test runs only when osascript exists locally",
+  { concurrency: false },
+  async (t: TestContext) => {
+    if (process.env.OC_NOTIFY_NATIVE_INTEGRATION !== "1") {
+      t.skip(
+        "Skipped local osascript integration test: set OC_NOTIFY_NATIVE_INTEGRATION=1 to enable",
+      );
+      return;
+    }
+
+    const inCi =
+      (process.env.CI && process.env.CI !== "0") ||
+      process.env.GITHUB_ACTIONS === "true";
+    if (inCi) {
+      t.skip(
+        "Skipped local osascript integration test: disabled in CI to avoid notification noise",
+      );
+      return;
+    }
+
+    if (process.platform !== "darwin") {
+      t.skip("Skipped local osascript integration test: requires macOS host");
+      return;
+    }
+
+    const hasOsaScript = await commandInPathForTest("osascript", process.env);
+    if (!hasOsaScript) {
+      t.skip(
+        "Skipped local osascript integration test: osascript not found in PATH",
+      );
+      return;
+    }
+
+    const notify = createNativeNotifier();
+    const ok = await awaitWithKeepAlive(
+      notify({
+        title: "OpenCode Notify Integration",
+        body: "Real osascript check",
+        event: "complete",
+        sound: false,
+        group: `integration-${Date.now()}`,
+      }),
+    );
+    assert.equal(ok, true);
   },
 );
 
@@ -431,8 +772,11 @@ test(
       assert.equal(log.length, 2);
       assert.equal(log[0].cmd, "notify-send");
       assert.equal(log[0].mode, "long");
+      assert.ok(log[0].args.includes("--"));
       assert.equal(log[1].cmd, "notify-send");
       assert.equal(log[1].mode, "short");
+      assert.ok(log[1].args.includes("--"));
+      assert.ok(!log[1].args.includes("-h"));
     } finally {
       restore();
       await cleanupTmpDir(binDir);
@@ -472,6 +816,49 @@ test(
         log.map((entry) => entry.mode),
         ["long", "short", "plain"],
       );
+      assert.ok(log[2].args.includes("--"));
+      assert.ok(!log[2].args.includes("-h"));
+    } finally {
+      restore();
+      await cleanupTmpDir(binDir);
+    }
+  },
+);
+
+test(
+  "linux notifier falls back to minimal mode",
+  { concurrency: false },
+  async () => {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "notify-native-bin-"));
+    const logFile = path.join(binDir, "notify.log");
+    await createFakeLinuxCommands(binDir);
+    await writeFile(logFile, "", "utf8");
+    const restore = await setupLinuxEnv(binDir, logFile, {
+      notifySendOk: "minimal",
+      canberraOk: "1",
+    });
+
+    try {
+      const notify = createNativeNotifier();
+      const ok = await awaitWithKeepAlive(
+        notify({
+          title: "Title",
+          body: "Body",
+          event: "complete",
+          sound: false,
+          group: "linux-group-minimal",
+        }),
+      );
+      assert.equal(ok, true);
+
+      const log = await readLog(logFile);
+      assert.equal(log.length, 4);
+      assert.deepEqual(
+        log.map((entry) => entry.mode),
+        ["long", "short", "plain", "minimal"],
+      );
+      assert.ok(!log[3].args.includes("--"));
+      assert.deepEqual(log[3].args, ["Title", "Body"]);
     } finally {
       restore();
       await cleanupTmpDir(binDir);
@@ -554,10 +941,10 @@ test(
       assert.equal(second, false);
 
       const log = await readLog(logFile);
-      assert.equal(log.length, 3);
+      assert.equal(log.length, 4);
       assert.deepEqual(
         log.map((entry) => entry.mode),
-        ["long", "short", "plain"],
+        ["long", "short", "plain", "minimal"],
       );
     } finally {
       restore();

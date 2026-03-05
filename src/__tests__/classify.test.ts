@@ -19,6 +19,22 @@ test('classify complete from session.status idle', () => {
   assert.equal(classified?.collapseKey, 'complete:ses_1')
 })
 
+test('classify complete from session.status idle with sessionId alias', () => {
+  const classifyEvent = createEventClassifier()
+  const event = {
+    type: 'session.status',
+    properties: {
+      sessionId: 'ses_alias',
+      status: { type: 'idle' },
+    },
+  } as any
+
+  const classified = classifyEvent(event)
+  assert.ok(classified)
+  assert.equal(classified?.event, 'complete')
+  assert.equal(classified?.collapseKey, 'complete:ses_alias')
+})
+
 test('classify attaches session title when known', () => {
   const classifyEvent = createEventClassifier()
 
@@ -560,6 +576,58 @@ test('suppress immediate complete after non-abort error', () => {
     },
   } as any)
   assert.equal(idle, null)
+})
+
+test('classify recognizes parentId/sessionId alias fields', () => {
+  const classifyEvent = createEventClassifier()
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.updated',
+      properties: {
+        info: {
+          sessionId: 'ses_alias_title',
+          title: 'Alias Session',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  const classified = classifyEvent({
+    type: 'session.status',
+    properties: {
+      sessionId: 'ses_alias_title',
+      status: { type: 'idle' },
+    },
+  } as any)
+
+  assert.ok(classified)
+  assert.equal(classified?.sessionTitle, 'Alias Session')
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.updated',
+      properties: {
+        info: {
+          id: 'ses_sub_alias',
+          parentId: 'ses_root',
+        },
+      },
+    } as any),
+    null,
+  )
+
+  assert.equal(
+    classifyEvent({
+      type: 'session.status',
+      properties: {
+        sessionId: 'ses_sub_alias',
+        status: { type: 'idle' },
+      },
+    } as any),
+    null,
+  )
 })
 
 test('ignore lifecycle notifications for subagent sessions', () => {
