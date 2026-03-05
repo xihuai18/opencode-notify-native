@@ -49,10 +49,12 @@
     "node": ">=18"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "^1.2.10"
+    "@opencode-ai/plugin": "^1.2.10",
+    "@opencode-ai/sdk": "^1.2.10"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.2.10",
+    "@opencode-ai/sdk": "^1.2.10",
     "@types/node": "^22.13.10",
     "typescript": "^5.8.2"
   }
