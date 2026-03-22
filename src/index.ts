@@ -24,6 +24,7 @@ type NativeNotify = (input: {
 }) => Promise<boolean>
 
 const COMPLETE_NOTIFY_DEBOUNCE_MS = 500
+const PERMISSION_NOTIFY_DEBOUNCE_MS = 350
 const GLOBAL_SESSION_KEY = 'global'
 
 function labelForEvent(event: NotifyEventType): string {
@@ -90,6 +91,15 @@ function extractSessionID(eventPayload: unknown): string | undefined {
   return firstString(info, ['id', 'sessionID', 'sessionId'])
 }
 
+function extractRequestID(eventPayload: unknown): string | undefined {
+  if (!isRecord(eventPayload)) return undefined
+  const properties = isRecord(eventPayload.properties)
+    ? eventPayload.properties
+    : null
+  if (!properties) return undefined
+  return firstString(properties, ['id', 'requestID', 'requestId'])
+}
+
 function makeBody(input: {
   sessionID?: string
   event: NotifyEventType
@@ -149,6 +159,10 @@ export function createOpenCodeNotifyPlugin(
       string,
       Array<{ timer: NodeJS.Timeout; event: ClassifiedEvent }>
     >()
+    const pendingPermissionByRequest = new Map<
+      string,
+      { timer: NodeJS.Timeout; event: ClassifiedEvent }
+    >()
 
     const sessionKey = (sessionID?: string): string =>
       sessionID || GLOBAL_SESSION_KEY
@@ -161,6 +175,14 @@ export function createOpenCodeNotifyPlugin(
         clearTimeout(item.timer)
       }
       pendingCompleteBySession.delete(key)
+    }
+
+    const cancelPendingPermission = (requestID?: string): void => {
+      if (!requestID) return
+      const pending = pendingPermissionByRequest.get(requestID)
+      if (!pending) return
+      clearTimeout(pending.timer)
+      pendingPermissionByRequest.delete(requestID)
     }
 
     const dispatcher = new NotifyDispatcher({
@@ -249,19 +271,45 @@ export function createOpenCodeNotifyPlugin(
       }
     }
 
-    const emitClassified = (inputEvent: {
-      event: NotifyEventType
-      source: string
-      summary: string
-      sessionID?: string
-      sessionTitle?: string
-      collapseKey: string
-      topicKey?: string
-    }) => {
+    const queuePermissionNotify = (
+      requestID: string,
+      inputEvent: ClassifiedEvent,
+    ): void => {
+      cancelPendingPermission(requestID)
+      const timer = setTimeout(() => {
+        const pending = pendingPermissionByRequest.get(requestID)
+        if (!pending) return
+        pendingPermissionByRequest.delete(requestID)
+        notify(pending.event)
+      }, PERMISSION_NOTIFY_DEBOUNCE_MS)
+      timer.unref?.()
+      pendingPermissionByRequest.set(requestID, { timer, event: inputEvent })
+    }
+
+    const emitClassified = (
+      inputEvent: {
+        event: NotifyEventType
+        source: string
+        summary: string
+        sessionID?: string
+        sessionTitle?: string
+        collapseKey: string
+        topicKey?: string
+      },
+      eventPayload?: unknown,
+    ) => {
       if (inputEvent.event === 'complete') {
         if (!eventEnabled('complete', config)) return
         queueCompleteNotify(inputEvent)
         return
+      }
+      if (inputEvent.source === 'permission.asked') {
+        const requestID = extractRequestID(eventPayload)
+        if (requestID) {
+          if (!eventEnabled('attention', config)) return
+          queuePermissionNotify(requestID, inputEvent)
+          return
+        }
       }
       notify(inputEvent)
     }
@@ -286,6 +334,9 @@ export function createOpenCodeNotifyPlugin(
           ) {
             cancelPendingComplete(extractSessionID(eventPayload))
           }
+          if (eventType === 'permission.replied') {
+            cancelPendingPermission(extractRequestID(eventPayload))
+          }
 
           const classified = classifyEvent(eventPayload)
           if (!classified) {
@@ -307,7 +358,7 @@ export function createOpenCodeNotifyPlugin(
             }
             return done
           }
-          emitClassified(classified)
+          emitClassified(classified, eventPayload)
         } catch (error) {
           debugWarn(
             `event hook failed: ${error instanceof Error ? error.message : String(error)}`,

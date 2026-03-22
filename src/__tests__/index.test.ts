@@ -360,6 +360,60 @@ test('distinct attention prompts are not suppressed by cooldown', async () => {
   assert.notEqual(calls[0].group, calls[1].group)
 })
 
+test('auto-accepted permission requests do not notify', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  await writeFile(
+    path.join(root, 'notify-native.config.json'),
+    JSON.stringify({
+      enabled: true,
+      sanitize: true,
+      collapseWindowMs: 0,
+      cooldownMs: 0,
+      showDirectory: false,
+      showSessionId: false,
+      events: { attention: true },
+    }),
+    'utf8',
+  )
+
+  const calls: any[] = []
+  const plugin = createOpenCodeNotifyPlugin({
+    notifyNative: async (input) => {
+      calls.push(input)
+      return true
+    },
+  })
+
+  const hooks = await plugin({ worktree: root, directory: root } as any)
+  assert.ok(typeof hooks.event === 'function')
+
+  await hooks.event!({
+    event: {
+      type: 'permission.asked',
+      properties: {
+        id: 'perm_auto_1',
+        sessionID: 'ses_auto_permission',
+        permission: 'bash',
+        patterns: ['git status'],
+      },
+    },
+  } as any)
+  await hooks.event!({
+    event: {
+      type: 'permission.replied',
+      properties: {
+        sessionID: 'ses_auto_permission',
+        requestID: 'perm_auto_1',
+        reply: 'always',
+      },
+    },
+  } as any)
+
+  await tick(450)
+
+  assert.equal(calls.length, 0)
+})
+
 test('malformed hook payload is ignored safely', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
   await writeFile(
