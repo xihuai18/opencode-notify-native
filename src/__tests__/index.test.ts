@@ -414,6 +414,124 @@ test('auto-accepted permission requests do not notify', async () => {
   assert.equal(calls.length, 0)
 })
 
+test('auto-answered questions do not notify', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  await writeFile(
+    path.join(root, 'notify-native.config.json'),
+    JSON.stringify({
+      enabled: true,
+      sanitize: true,
+      collapseWindowMs: 0,
+      cooldownMs: 0,
+      showDirectory: false,
+      showSessionId: false,
+      events: { attention: true },
+    }),
+    'utf8',
+  )
+
+  const calls: any[] = []
+  const plugin = createOpenCodeNotifyPlugin({
+    notifyNative: async (input) => {
+      calls.push(input)
+      return true
+    },
+  })
+
+  const hooks = await plugin({ worktree: root, directory: root } as any)
+  assert.ok(typeof hooks.event === 'function')
+
+  await hooks.event!({
+    event: {
+      type: 'question.asked',
+      properties: {
+        id: 'q_auto_1',
+        sessionID: 'ses_auto_question',
+        questions: [
+          {
+            header: 'Pick one',
+            question: 'Pick one',
+            options: [{ label: 'Yes', description: 'Confirm' }],
+          },
+        ],
+      },
+    },
+  } as any)
+  await hooks.event!({
+    event: {
+      type: 'question.replied',
+      properties: {
+        sessionID: 'ses_auto_question',
+        requestID: 'q_auto_1',
+        answers: [['Yes']],
+      },
+    },
+  } as any)
+
+  await tick(450)
+
+  assert.equal(calls.length, 0)
+})
+
+test('session deletion cancels pending actionable notification', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  await writeFile(
+    path.join(root, 'notify-native.config.json'),
+    JSON.stringify({
+      enabled: true,
+      sanitize: true,
+      collapseWindowMs: 0,
+      cooldownMs: 0,
+      showDirectory: false,
+      showSessionId: false,
+      events: { attention: true },
+    }),
+    'utf8',
+  )
+
+  const calls: any[] = []
+  const plugin = createOpenCodeNotifyPlugin({
+    notifyNative: async (input) => {
+      calls.push(input)
+      return true
+    },
+  })
+
+  const hooks = await plugin({ worktree: root, directory: root } as any)
+  assert.ok(typeof hooks.event === 'function')
+
+  await hooks.event!({
+    event: {
+      type: 'question.asked',
+      properties: {
+        id: 'q_deleted_1',
+        sessionID: 'ses_deleted_question',
+        questions: [
+          {
+            header: 'Need input',
+            question: 'Need input',
+            options: [{ label: 'Ok', description: 'Continue' }],
+          },
+        ],
+      },
+    },
+  } as any)
+  await hooks.event!({
+    event: {
+      type: 'session.deleted',
+      properties: {
+        info: {
+          id: 'ses_deleted_question',
+        },
+      },
+    },
+  } as any)
+
+  await tick(450)
+
+  assert.equal(calls.length, 0)
+})
+
 test('malformed hook payload is ignored safely', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
   await writeFile(

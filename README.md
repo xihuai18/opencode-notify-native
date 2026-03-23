@@ -35,7 +35,7 @@ Direct native notification plugin for OpenCode.
 - Complete notifications are held briefly and canceled if a `session.error` arrives right after idle, preventing false "Completed" after failures/aborts.
 - Idle transitions right after non-abort errors are suppressed to avoid "Error + Completed" double noise.
 - Attention notifications are emitted only for unresolved prompts (`permission.asked`, unresolved legacy `permission.updated`, and `question.asked`).
-- Permission prompts are briefly delayed and canceled if the same request is auto-accepted immediately, so auto-approved permission flows stay quiet by default.
+- Permission and question prompts are briefly delayed and canceled if the same request is resolved immediately, so auto-approved or instantly answered flows stay quiet by default.
 - Acknowledgement events (`permission.replied`, `question.replied`, `question.rejected`) and legacy `question.updated` are ignored.
 - When event semantics are unclear, the plugin prefers no-notify and relies on debug logs for observation.
 
@@ -179,7 +179,7 @@ If you are testing and expect a banner for every completion, note the defaults:
 
 - `collapseWindowMs` collapses bursts into one notification.
 - `cooldownMs` suppresses repeats for the same session/event.
-- Auto-accepted permission requests are suppressed by default, so only unresolved permission prompts typically surface as `attention` notifications.
+- Auto-resolved permission/question requests are suppressed by default, so `attention` notifications usually surface only for prompts that still need user action.
 
 Implementation note:
 

@@ -24,7 +24,7 @@ type NativeNotify = (input: {
 }) => Promise<boolean>
 
 const COMPLETE_NOTIFY_DEBOUNCE_MS = 500
-const PERMISSION_NOTIFY_DEBOUNCE_MS = 350
+const ACTIONABLE_NOTIFY_DEBOUNCE_MS = 350
 const GLOBAL_SESSION_KEY = 'global'
 
 function labelForEvent(event: NotifyEventType): string {
@@ -159,9 +159,9 @@ export function createOpenCodeNotifyPlugin(
       string,
       Array<{ timer: NodeJS.Timeout; event: ClassifiedEvent }>
     >()
-    const pendingPermissionByRequest = new Map<
+    const pendingActionableByRequest = new Map<
       string,
-      { timer: NodeJS.Timeout; event: ClassifiedEvent }
+      { timer: NodeJS.Timeout; event: ClassifiedEvent; sessionID?: string }
     >()
 
     const sessionKey = (sessionID?: string): string =>
@@ -177,12 +177,21 @@ export function createOpenCodeNotifyPlugin(
       pendingCompleteBySession.delete(key)
     }
 
-    const cancelPendingPermission = (requestID?: string): void => {
+    const cancelPendingActionable = (requestID?: string): void => {
       if (!requestID) return
-      const pending = pendingPermissionByRequest.get(requestID)
+      const pending = pendingActionableByRequest.get(requestID)
       if (!pending) return
       clearTimeout(pending.timer)
-      pendingPermissionByRequest.delete(requestID)
+      pendingActionableByRequest.delete(requestID)
+    }
+
+    const cancelPendingActionablesBySession = (sessionID?: string): void => {
+      if (!sessionID) return
+      for (const [requestID, pending] of pendingActionableByRequest) {
+        if (pending.sessionID !== sessionID) continue
+        clearTimeout(pending.timer)
+        pendingActionableByRequest.delete(requestID)
+      }
     }
 
     const dispatcher = new NotifyDispatcher({
@@ -271,19 +280,23 @@ export function createOpenCodeNotifyPlugin(
       }
     }
 
-    const queuePermissionNotify = (
+    const queueActionableNotify = (
       requestID: string,
       inputEvent: ClassifiedEvent,
     ): void => {
-      cancelPendingPermission(requestID)
+      cancelPendingActionable(requestID)
       const timer = setTimeout(() => {
-        const pending = pendingPermissionByRequest.get(requestID)
+        const pending = pendingActionableByRequest.get(requestID)
         if (!pending) return
-        pendingPermissionByRequest.delete(requestID)
+        pendingActionableByRequest.delete(requestID)
         notify(pending.event)
-      }, PERMISSION_NOTIFY_DEBOUNCE_MS)
+      }, ACTIONABLE_NOTIFY_DEBOUNCE_MS)
       timer.unref?.()
-      pendingPermissionByRequest.set(requestID, { timer, event: inputEvent })
+      pendingActionableByRequest.set(requestID, {
+        timer,
+        event: inputEvent,
+        sessionID: inputEvent.sessionID,
+      })
     }
 
     const emitClassified = (
@@ -303,11 +316,14 @@ export function createOpenCodeNotifyPlugin(
         queueCompleteNotify(inputEvent)
         return
       }
-      if (inputEvent.source === 'permission.asked') {
+      if (
+        inputEvent.source === 'permission.asked' ||
+        inputEvent.source === 'question.asked'
+      ) {
         const requestID = extractRequestID(eventPayload)
         if (requestID) {
           if (!eventEnabled('attention', config)) return
-          queuePermissionNotify(requestID, inputEvent)
+          queueActionableNotify(requestID, inputEvent)
           return
         }
       }
@@ -332,10 +348,16 @@ export function createOpenCodeNotifyPlugin(
             eventType === 'session.error' ||
             eventType === 'session.deleted'
           ) {
-            cancelPendingComplete(extractSessionID(eventPayload))
+            const sessionID = extractSessionID(eventPayload)
+            cancelPendingComplete(sessionID)
+            cancelPendingActionablesBySession(sessionID)
           }
-          if (eventType === 'permission.replied') {
-            cancelPendingPermission(extractRequestID(eventPayload))
+          if (
+            eventType === 'permission.replied' ||
+            eventType === 'question.replied' ||
+            eventType === 'question.rejected'
+          ) {
+            cancelPendingActionable(extractRequestID(eventPayload))
           }
 
           const classified = classifyEvent(eventPayload)
