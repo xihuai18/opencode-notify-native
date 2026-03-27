@@ -6,6 +6,13 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 
 import { createOpenCodeNotifyPlugin } from '../index.js'
 
+const defaultClient = process.env.OPENCODE_CLIENT
+process.env.OPENCODE_CLIENT = 'cli'
+test.after(() => {
+  if (defaultClient === undefined) delete process.env.OPENCODE_CLIENT
+  else process.env.OPENCODE_CLIENT = defaultClient
+})
+
 function tick(ms = 0): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -72,6 +79,29 @@ test('plugin wires event -> classify -> dispatch -> native send', async () => {
   assert.match(calls[0].body, /^Completed · Task completed/)
   assert.ok(!calls[0].body.startsWith('Complete:'))
   assert.match(calls[0].body, /\n\(x3\)$/)
+})
+
+test('plugin auto-silences on desktop client', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  const prevClient = process.env.OPENCODE_CLIENT
+  process.env.OPENCODE_CLIENT = 'desktop'
+
+  try {
+    const calls: any[] = []
+    const plugin = createOpenCodeNotifyPlugin({
+      notifyNative: async (input) => {
+        calls.push(input)
+        return true
+      },
+    })
+
+    const hooks = await plugin({ worktree: root, directory: root } as any)
+    assert.equal(hooks.event, undefined)
+    assert.equal(calls.length, 0)
+  } finally {
+    if (prevClient === undefined) delete process.env.OPENCODE_CLIENT
+    else process.env.OPENCODE_CLIENT = prevClient
+  }
 })
 
 test('plugin accepts raw event payload shape', async () => {

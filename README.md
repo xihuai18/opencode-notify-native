@@ -2,6 +2,8 @@
 
 Direct native notification plugin for OpenCode.
 
+When OpenCode Desktop already provides notifications, this plugin stays quiet by default.
+
 ## What this repository ships
 
 - npm package: `@leo000001/opencode-notify-native`
@@ -16,6 +18,7 @@ Direct native notification plugin for OpenCode.
 ## Features
 
 - Native notifications on Windows, macOS, Linux
+- Auto-silence on OpenCode Desktop to avoid double alerts
 - Automatic event hooks:
   - `complete`
   - `error`
@@ -124,6 +127,9 @@ Values are layered; later sources override earlier ones.
 ```json
 {
   "enabled": true,
+  "autoSilence": {
+    "desktop": true
+  },
   "events": {
     "complete": true,
     "error": true,
@@ -145,6 +151,8 @@ Values are layered; later sources override earlier ones.
 
 Notes:
 
+- `autoSilence.desktop` uses OpenCode's `OPENCODE_CLIENT=desktop` runtime signal.
+- `opencode serve` and `opencode web` stay enabled by default. If you also use a frontend notification system there, disable this plugin explicitly in config.
 - `sanitize: true` enables best-effort redaction of token-like substrings (for example `Bearer ...`).
 - Regardless of `sanitize`, the plugin normalizes whitespace, strips control characters, and clamps lengths to keep notification backends stable.
 - If you set `sanitize: false`, notifications may include secrets from tool output or error messages.

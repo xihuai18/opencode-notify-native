@@ -6,6 +6,7 @@ import { createEventClassifier } from './classify.js'
 import { NotifyDispatcher } from './dispatcher.js'
 import { debugEnabled, debugWarn } from './debug.js'
 import { isRecord } from './guards.js'
+import { autoSilenceReason } from './runtime.js'
 import {
   firstLine,
   formatCollapsedBody,
@@ -146,6 +147,11 @@ export function createOpenCodeNotifyPlugin(
   ): Promise<Hooks> {
     const notifyNative = deps.notifyNative || createNativeNotifier()
     const config = await loadPluginConfig(input.worktree, input.directory)
+    const silenceReason = autoSilenceReason(config)
+    if (silenceReason) {
+      debugWarn(`auto-silenced: ${silenceReason}`)
+      return {}
+    }
     const project = sanitizeText(
       toProjectName(input.worktree, input.directory),
       {
