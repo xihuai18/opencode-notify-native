@@ -151,7 +151,7 @@ Values are layered; later sources override earlier ones.
 
 Notes:
 
-- `autoSilence.nonTui` silences the plugin for OpenCode Desktop and for non-TUI server commands such as `opencode web` and `opencode serve`.
+- `autoSilence.nonTui` silences the plugin for non-TUI OpenCode runtimes, including Desktop, ACP, and server commands such as `opencode web` and `opencode serve`.
 - Backward compatibility: older configs can still use `autoSilence.desktop`, which is treated as an alias for `autoSilence.nonTui`.
 - `sanitize: true` enables best-effort redaction of token-like substrings (for example `Bearer ...`).
 - Regardless of `sanitize`, the plugin normalizes whitespace, strips control characters, and clamps lengths to keep notification backends stable.

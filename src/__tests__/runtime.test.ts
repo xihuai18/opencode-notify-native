@@ -8,7 +8,15 @@ test('autoSilenceReason detects desktop client', () => {
   const config = defaultPluginConfig()
   assert.equal(
     autoSilenceReason(config, { opencodeClient: 'desktop' }),
-    'desktop client',
+    'non-tui client: desktop',
+  )
+})
+
+test('autoSilenceReason detects acp client', () => {
+  const config = defaultPluginConfig()
+  assert.equal(
+    autoSilenceReason(config, { opencodeClient: 'acp' }),
+    'non-tui client: acp',
   )
 })
 

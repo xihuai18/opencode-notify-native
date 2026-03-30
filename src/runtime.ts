@@ -32,8 +32,8 @@ export function autoSilenceReason(
     return undefined
   }
 
-  if (client === 'desktop') {
-    return 'desktop client'
+  if (client === 'desktop' || client === 'acp') {
+    return `non-tui client: ${client}`
   }
 
   const command = firstCommand(runtime.argv ?? process.argv)

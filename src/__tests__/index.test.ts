@@ -104,6 +104,29 @@ test('plugin auto-silences on desktop client', async () => {
   }
 })
 
+test('plugin auto-silences on acp client', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  const prevClient = process.env.OPENCODE_CLIENT
+  process.env.OPENCODE_CLIENT = 'acp'
+
+  try {
+    const calls: any[] = []
+    const plugin = createOpenCodeNotifyPlugin({
+      notifyNative: async (input) => {
+        calls.push(input)
+        return true
+      },
+    })
+
+    const hooks = await plugin({ worktree: root, directory: root } as any)
+    assert.equal(hooks.event, undefined)
+    assert.equal(calls.length, 0)
+  } finally {
+    if (prevClient === undefined) delete process.env.OPENCODE_CLIENT
+    else process.env.OPENCODE_CLIENT = prevClient
+  }
+})
+
 test('plugin auto-silences on web command', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
   const prevArgv = process.argv
