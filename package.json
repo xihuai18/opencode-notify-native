@@ -1,6 +1,6 @@
 {
   "name": "@leo000001/opencode-notify-native",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "OpenCode plugin for direct native notification center alerts",
   "type": "module",
   "main": "dist/index.js",
