@@ -104,6 +104,58 @@ test('plugin auto-silences on desktop client', async () => {
   }
 })
 
+test('plugin auto-silences on web command', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  const prevArgv = process.argv
+  const prevClient = process.env.OPENCODE_CLIENT
+  process.argv = ['node', 'opencode', 'web']
+  process.env.OPENCODE_CLIENT = 'cli'
+
+  try {
+    const calls: any[] = []
+    const plugin = createOpenCodeNotifyPlugin({
+      notifyNative: async (input) => {
+        calls.push(input)
+        return true
+      },
+    })
+
+    const hooks = await plugin({ worktree: root, directory: root } as any)
+    assert.equal(hooks.event, undefined)
+    assert.equal(calls.length, 0)
+  } finally {
+    process.argv = prevArgv
+    if (prevClient === undefined) delete process.env.OPENCODE_CLIENT
+    else process.env.OPENCODE_CLIENT = prevClient
+  }
+})
+
+test('plugin auto-silences on serve command', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
+  const prevArgv = process.argv
+  const prevClient = process.env.OPENCODE_CLIENT
+  process.argv = ['node', 'opencode', 'serve']
+  process.env.OPENCODE_CLIENT = 'cli'
+
+  try {
+    const calls: any[] = []
+    const plugin = createOpenCodeNotifyPlugin({
+      notifyNative: async (input) => {
+        calls.push(input)
+        return true
+      },
+    })
+
+    const hooks = await plugin({ worktree: root, directory: root } as any)
+    assert.equal(hooks.event, undefined)
+    assert.equal(calls.length, 0)
+  } finally {
+    process.argv = prevArgv
+    if (prevClient === undefined) delete process.env.OPENCODE_CLIENT
+    else process.env.OPENCODE_CLIENT = prevClient
+  }
+})
+
 test('plugin accepts raw event payload shape', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-notify-native-'))
   await writeFile(

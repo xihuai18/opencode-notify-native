@@ -4,7 +4,7 @@ export type NotifySound = boolean | string
 export type PluginConfig = {
   enabled: boolean
   autoSilence: {
-    desktop: boolean
+    nonTui: boolean
   }
   sanitize: boolean
   maxBodyLength: number

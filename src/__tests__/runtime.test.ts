@@ -12,6 +12,28 @@ test('autoSilenceReason detects desktop client', () => {
   )
 })
 
+test('autoSilenceReason detects non-tui web command', () => {
+  const config = defaultPluginConfig()
+  assert.equal(
+    autoSilenceReason(config, {
+      argv: ['node', 'opencode', 'web'],
+      opencodeClient: 'cli',
+    }),
+    'non-tui command: web',
+  )
+})
+
+test('autoSilenceReason detects non-tui serve command', () => {
+  const config = defaultPluginConfig()
+  assert.equal(
+    autoSilenceReason(config, {
+      argv: ['node', 'opencode', 'serve'],
+      opencodeClient: 'cli',
+    }),
+    'non-tui command: serve',
+  )
+})
+
 test('autoSilenceReason does not silence on app client alone', () => {
   const config = defaultPluginConfig()
   assert.equal(autoSilenceReason(config, { opencodeClient: 'app' }), undefined)
@@ -19,7 +41,7 @@ test('autoSilenceReason does not silence on app client alone', () => {
 
 test('autoSilenceReason respects config opt-out', () => {
   const config = defaultPluginConfig()
-  config.autoSilence.desktop = false
+  config.autoSilence.nonTui = false
 
   assert.equal(
     autoSilenceReason(config, { opencodeClient: 'desktop' }),

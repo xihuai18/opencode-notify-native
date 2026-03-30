@@ -63,7 +63,7 @@ test('loadPluginConfig supports layered global + project config', async () => {
     )
 
     const config = await loadPluginConfig(root, root)
-    assert.equal(config.autoSilence.desktop, true)
+    assert.equal(config.autoSilence.nonTui, true)
     assert.equal(config.showDirectory, false)
     assert.equal(config.events.complete, false)
     assert.equal(config.showSessionId, true)
@@ -178,10 +178,10 @@ test('defaultPluginConfig returns a deep copy', () => {
   const b = defaultPluginConfig()
   a.events.complete = false
   a.soundByEvent.error = false
-  a.autoSilence.desktop = false
+  a.autoSilence.nonTui = false
 
   assert.equal(b.events.complete, true)
   assert.equal(b.soundByEvent.error, 'error')
-  assert.equal(b.autoSilence.desktop, true)
+  assert.equal(b.autoSilence.nonTui, true)
   assert.equal(b.showDirectory, false)
 })

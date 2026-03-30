@@ -2,7 +2,7 @@
 
 Direct native notification plugin for OpenCode.
 
-When OpenCode Desktop already provides notifications, this plugin stays quiet by default.
+When OpenCode is running outside the TUI, this plugin stays quiet by default.
 
 ## What this repository ships
 
@@ -18,7 +18,7 @@ When OpenCode Desktop already provides notifications, this plugin stays quiet by
 ## Features
 
 - Native notifications on Windows, macOS, Linux
-- Auto-silence on OpenCode Desktop to avoid double alerts
+- Auto-silence in non-TUI runtimes to avoid duplicate frontend alerts
 - Automatic event hooks:
   - `complete`
   - `error`
@@ -128,7 +128,7 @@ Values are layered; later sources override earlier ones.
 {
   "enabled": true,
   "autoSilence": {
-    "desktop": true
+    "nonTui": true
   },
   "events": {
     "complete": true,
@@ -151,8 +151,8 @@ Values are layered; later sources override earlier ones.
 
 Notes:
 
-- `autoSilence.desktop` uses OpenCode's `OPENCODE_CLIENT=desktop` runtime signal.
-- `opencode serve` and `opencode web` stay enabled by default. If you also use a frontend notification system there, disable this plugin explicitly in config.
+- `autoSilence.nonTui` silences the plugin for OpenCode Desktop and for non-TUI server commands such as `opencode web` and `opencode serve`.
+- Backward compatibility: older configs can still use `autoSilence.desktop`, which is treated as an alias for `autoSilence.nonTui`.
 - `sanitize: true` enables best-effort redaction of token-like substrings (for example `Bearer ...`).
 - Regardless of `sanitize`, the plugin normalizes whitespace, strips control characters, and clamps lengths to keep notification backends stable.
 - If you set `sanitize: false`, notifications may include secrets from tool output or error messages.

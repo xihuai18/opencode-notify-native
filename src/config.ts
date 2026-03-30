@@ -9,7 +9,7 @@ import { isRecord } from './guards.js'
 const DEFAULT_CONFIG: PluginConfig = {
   enabled: true,
   autoSilence: {
-    desktop: true,
+    nonTui: true,
   },
   sanitize: true,
   maxBodyLength: 200,
@@ -91,7 +91,7 @@ const TOP_LEVEL_KEYS = new Set([
 ])
 
 const EVENT_KEYS = new Set(['complete', 'error', 'attention'])
-const AUTO_SILENCE_KEYS = new Set(['desktop'])
+const AUTO_SILENCE_KEYS = new Set(['nonTui', 'desktop'])
 
 function warnUnknownKeys(
   input: Record<string, unknown>,
@@ -136,10 +136,21 @@ function mergeConfig(base: PluginConfig, input: unknown): PluginConfig {
 
   if (isRecord(input.autoSilence)) {
     warnUnknownKeys(input.autoSilence, AUTO_SILENCE_KEYS, 'autoSilence.')
-    next.autoSilence.desktop = asBoolean(
-      input.autoSilence.desktop,
-      next.autoSilence.desktop,
-    )
+    const hasNonTui = 'nonTui' in input.autoSilence
+    const hasDesktop = 'desktop' in input.autoSilence
+
+    if (hasNonTui) {
+      next.autoSilence.nonTui = asBoolean(
+        input.autoSilence.nonTui,
+        next.autoSilence.nonTui,
+      )
+    } else if (hasDesktop) {
+      // Backward-compatible alias for older config files.
+      next.autoSilence.nonTui = asBoolean(
+        input.autoSilence.desktop,
+        next.autoSilence.nonTui,
+      )
+    }
   }
 
   if (isRecord(input.events)) {
