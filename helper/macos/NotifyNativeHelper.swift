@@ -72,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private let mode: LaunchMode
   private var idleQuitTask: DispatchWorkItem?
 
-  init(mode: LaunchMode) {
+  fileprivate init(mode: LaunchMode) {
     self.mode = mode
     super.init()
     center.delegate = self

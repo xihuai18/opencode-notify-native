@@ -44,7 +44,17 @@ function tryRun(command, args, options = {}) {
 
 function compileSingleArch({ swiftc, sdkPath, arch, outputPath }) {
   const target = `${arch}-apple-macos13.0`
-  run(swiftc, ['-target', target, '-sdk', sdkPath, '-O', sourceFile, '-o', outputPath])
+  run(swiftc, [
+    '-parse-as-library',
+    '-target',
+    target,
+    '-sdk',
+    sdkPath,
+    '-O',
+    sourceFile,
+    '-o',
+    outputPath,
+  ])
 }
 
 function buildExecutable() {
