@@ -168,7 +168,8 @@ Notes:
 - Windows: notifications depend on system notification settings and Focus Assist.
 - Windows sender label: defaults to Explorer to keep click behavior stable. Set `OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER=terminal` to prefer Windows Terminal app IDs.
 - Windows command launch is hardened for `.cmd`/shim-heavy environments (including CI) with retry and shell fallbacks.
-- macOS: uses `osascript` (`display notification`) only. This backend cannot replace/group notifications at the OS level.
+- macOS: prefers the bundled `NotifyNativeHelper.app` for notification UI/click handling and uses best-effort explicit sound playback. If the helper is unavailable, it falls back to `osascript` (`display notification`).
+- macOS sound names accept both legacy file names (`Glass`, `Basso`, `Funk`, ...) and newer UI labels (`Crystal`, `Mezzo`, `Boop`, ...). Custom sounds resolve from `~/Library/Sounds`, `/Library/Sounds`, then `/System/Library/Sounds`.
 - Linux: requires `notify-send` (for example `libnotify-bin` on Debian/Ubuntu). Backend delivery falls back through `long -> short -> plain -> minimal` argument modes for compatibility.
 - Linux sound: `notify-send` has no standard sound support; this plugin can only best-effort play sounds when `canberra-gtk-play` is available.
 - Sender identity is platform-defined: macOS `osascript` does not support setting the sender to the current terminal, Windows sender is tied to the selected AUMID, and Linux can only provide a best-effort app name (`opencode`).
@@ -180,6 +181,7 @@ If a config file exists but is ignored (for example due to invalid JSON), this p
 - Non-ENOENT config load failures emit a one-time warning to stderr.
 - Unknown config keys emit a one-time warning and are ignored.
 - Backend command spawn failures also emit one-time warnings to stderr.
+- macOS helper overrides: set `OPENCODE_NOTIFY_NATIVE_MAC_HELPER=/path/to/NotifyNativeHelper` to test a custom helper binary, or `OPENCODE_NOTIFY_NATIVE_DISABLE_MAC_HELPER=1` to force `osascript` fallback.
 - Set `OPENCODE_NOTIFY_NATIVE_DEBUG=1` for detailed debug logs (including full error messages and ignored event traces).
 - Config is loaded once at plugin initialization (no hot-reload during a running session).
 
@@ -198,7 +200,8 @@ Implementation note:
 
 - The plugin keeps click behavior as best-effort no-op.
 - The plugin does not register any custom click action.
-- On macOS `osascript`, custom click actions are not supported; click behavior is controlled by Notification Center and varies by system settings.
+- On macOS helper-backed notifications, clicking the notification should only dismiss that notification without surfacing any editor or terminal window.
+- On macOS `osascript` fallback, custom click actions are not supported; click behavior is controlled by Notification Center and varies by system settings.
 - On Linux and Windows, click handling still depends on the OS notification service and cannot be guaranteed as strict no-op in every environment.
 - It is intentionally not designed to jump/focus the originating terminal/editor window.
 - If you opt into `OPENCODE_NOTIFY_NATIVE_WINDOWS_SENDER=terminal`, click behavior is still best-effort no-op but depends on Windows Terminal activation handling.
@@ -211,6 +214,9 @@ npm run build
 npm run typecheck
 npm test
 ```
+
+- On macOS, `npm run build` also rebuilds the bundled `NotifyNativeHelper.app` used for close-only click handling.
+- On non-macOS source checkouts, helper bundling is skipped and runtime falls back to `osascript` unless you point `OPENCODE_NOTIFY_NATIVE_MAC_HELPER` at a custom build.
 
 Optional local integration check on macOS (sends a real notification):
 

@@ -2,7 +2,9 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { backendBackoffMs } from './backoff.js'
 import { debugEnabled, debugWarn } from './debug.js'
@@ -51,6 +53,57 @@ function hashHex(input: string, length: number): string {
     .update(input, 'utf8')
     .digest('hex')
     .slice(0, length)
+}
+
+const packageRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
+const MAC_HELPER_APP_NAME = 'NotifyNativeHelper.app'
+const MAC_HELPER_EXECUTABLE = 'NotifyNativeHelper'
+
+function bundledMacHelperPath(): string {
+  return path.join(
+    packageRoot,
+    'vendor',
+    'macos',
+    MAC_HELPER_APP_NAME,
+    'Contents',
+    'MacOS',
+    MAC_HELPER_EXECUTABLE,
+  )
+}
+
+function macHelperOverridePath(): string {
+  const raw = stripControlChars(
+    process.env.OPENCODE_NOTIFY_NATIVE_MAC_HELPER || '',
+  )
+  if (!raw) return ''
+  if (raw.toLowerCase().endsWith('.app')) {
+    return path.join(raw, 'Contents', 'MacOS', MAC_HELPER_EXECUTABLE)
+  }
+  return raw
+}
+
+async function resolveMacHelperPath(): Promise<string | null> {
+  if (
+    stripControlChars(
+      process.env.OPENCODE_NOTIFY_NATIVE_DISABLE_MAC_HELPER || '',
+    )
+  ) {
+    return null
+  }
+
+  const override = macHelperOverridePath()
+  if (override) {
+    if (await fileExists(override)) return override
+    visibleWarnOnce(
+      `mac-helper:override:${override}`,
+      `configured macOS helper was not found at ${override}; falling back to osascript`,
+    )
+    return null
+  }
+
+  const bundled = bundledMacHelperPath()
+  if (await fileExists(bundled)) return bundled
+  return null
 }
 
 function windowsNotifierAppIds(): string[] {
@@ -342,6 +395,12 @@ type BackendState = {
   windowsPreferredShell: '' | 'pwsh' | 'powershell'
   macNotifyDisabledUntil: number
   macNotifyFailures: number
+  macHelperDisabledUntil: number
+  macHelperFailures: number
+  macPreferredBackend: '' | 'helper' | 'osascript'
+  macSoundDisabledUntil: number
+  macSoundFailures: number
+  macSoundInFlight: boolean
   linuxCanberraDisabledUntil: number
   linuxCanberraFailures: number
   linuxCanberraInFlight: boolean
@@ -357,6 +416,12 @@ function createBackendState(): BackendState {
     windowsPreferredShell: '',
     macNotifyDisabledUntil: 0,
     macNotifyFailures: 0,
+    macHelperDisabledUntil: 0,
+    macHelperFailures: 0,
+    macPreferredBackend: '',
+    macSoundDisabledUntil: 0,
+    macSoundFailures: 0,
+    macSoundInFlight: false,
     linuxCanberraDisabledUntil: 0,
     linuxCanberraFailures: 0,
     linuxCanberraInFlight: false,
@@ -383,6 +448,43 @@ export function windowsAudioNode(sound: boolean | string): string {
   return ''
 }
 
+const MAC_SOUND_NAME_ALIASES: Record<string, string> = {
+  basso: 'Basso',
+  blow: 'Blow',
+  boop: 'Tink',
+  bottle: 'Bottle',
+  breeze: 'Blow',
+  bubble: 'Pop',
+  crystal: 'Glass',
+  frog: 'Frog',
+  funk: 'Funk',
+  funky: 'Funk',
+  glass: 'Glass',
+  hero: 'Hero',
+  heroine: 'Hero',
+  jump: 'Frog',
+  mezzo: 'Basso',
+  morse: 'Morse',
+  pebble: 'Bottle',
+  ping: 'Ping',
+  pluck: 'Purr',
+  pong: 'Morse',
+  pop: 'Pop',
+  purr: 'Purr',
+  sonar: 'Ping',
+  sonumi: 'Sosumi',
+  sosumi: 'Sosumi',
+  submerge: 'Submarine',
+  submarine: 'Submarine',
+  tink: 'Tink',
+}
+
+const MAC_BUILT_IN_SOUND_NAMES = new Set(
+  Object.values(MAC_SOUND_NAME_ALIASES).map((name) => name.toLowerCase()),
+)
+
+const MAC_SOUND_EXTENSIONS = ['.aiff', '.aif', '.caf', '.wav']
+
 function windowsTextNodes(title: string, body: string): string {
   const bodyLines = body
     .split(/\r?\n/g)
@@ -406,11 +508,204 @@ export function macSoundName(
     return 'Funk'
   }
   if (typeof sound === 'string') {
-    if (sound === 'attention') return 'Glass'
-    if (sound === 'error') return 'Basso'
-    return sound
+    const value = stripControlChars(sound).slice(0, 200)
+    if (!value) return ''
+
+    const lowered = value.toLowerCase()
+    if (lowered === 'complete') return 'Funk'
+    if (lowered === 'attention') return 'Glass'
+    if (lowered === 'error') return 'Basso'
+    return MAC_SOUND_NAME_ALIASES[lowered] || value
   }
   return ''
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath, constants.F_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function resolveMacSoundPath(soundName: string): Promise<string | null> {
+  const value = stripControlChars(soundName).slice(0, 200)
+  if (!value || /[\\/]/.test(value)) return null
+
+  const parsed = path.parse(value)
+  const ext = parsed.ext.toLowerCase()
+  const hasExt = MAC_SOUND_EXTENSIONS.includes(ext)
+  const fileNames = hasExt
+    ? [parsed.base]
+    : MAC_SOUND_EXTENSIONS.map((candidateExt) => `${value}${candidateExt}`)
+
+  const dirs = [
+    path.join(os.homedir(), 'Library', 'Sounds'),
+    path.join(path.sep, 'Library', 'Sounds'),
+    path.join(path.sep, 'System', 'Library', 'Sounds'),
+  ]
+
+  for (const dir of dirs) {
+    for (const fileName of fileNames) {
+      const candidate = path.join(dir, fileName)
+      if (await fileExists(candidate)) return candidate
+    }
+  }
+
+  const builtInName = (hasExt ? parsed.name : value).toLowerCase()
+  if (
+    MAC_BUILT_IN_SOUND_NAMES.has(builtInName) &&
+    (!hasExt || ext === '.aif' || ext === '.aiff')
+  ) {
+    return path.join(
+      path.sep,
+      'System',
+      'Library',
+      'Sounds',
+      `${parsed.name || value}.aiff`,
+    )
+  }
+
+  return null
+}
+
+function macNotificationIdentifier(group: string): string {
+  return `opencode-${hashHex(group, 32)}`
+}
+
+type MacNotifyAttempt = {
+  ok: boolean
+  attempted: boolean
+}
+
+async function notifyMacWithHelper(
+  state: BackendState,
+  title: string,
+  body: string,
+  group: string,
+): Promise<MacNotifyAttempt> {
+  const now = Date.now()
+  if (now < state.macHelperDisabledUntil) {
+    return { ok: false, attempted: true }
+  }
+
+  const helperPath = await resolveMacHelperPath()
+  if (!helperPath) return { ok: false, attempted: false }
+
+  const ok = await run(
+    helperPath,
+    [
+      'notify',
+      '--title',
+      title,
+      '--body',
+      body,
+      '--identifier',
+      macNotificationIdentifier(group),
+      '--thread',
+      group,
+    ],
+    { timeoutMs: 8_000 },
+  )
+
+  if (ok) {
+    state.macHelperFailures = 0
+    state.macHelperDisabledUntil = 0
+    state.macPreferredBackend = 'helper'
+    return { ok: true, attempted: true }
+  }
+
+  state.macHelperFailures += 1
+  state.macHelperDisabledUntil = now + backendBackoffMs(state.macHelperFailures)
+  return { ok: false, attempted: true }
+}
+
+async function notifyMacWithAppleScript(
+  title: string,
+  body: string,
+  soundName: string,
+  useDefaultSound: boolean,
+): Promise<boolean> {
+  const script = [
+    'on run argv',
+    'set t to ""',
+    'set b to ""',
+    'set s to ""',
+    'if (count of argv) >= 1 then set t to item 1 of argv',
+    'if (count of argv) >= 2 then set b to item 2 of argv',
+    'if (count of argv) >= 3 then set s to item 3 of argv',
+    'if s is not "" then',
+    '  display notification b with title t sound name s',
+    'else',
+    '  display notification b with title t',
+    'end if',
+    'end run',
+  ].join('\n')
+
+  // `system attribute` decodes UTF-8 environment values incorrectly on many
+  // macOS setups. Pass user text via argv to preserve Unicode.
+  // `display notification` does not expose click-action controls.
+  return run(
+    'osascript',
+    ['-e', script, '--', title, body, useDefaultSound ? soundName : ''],
+    { timeoutMs: 8_000 },
+  )
+}
+
+async function playMacSound(
+  state: BackendState,
+  soundName: string,
+  options: { allowDefaultBeep: boolean },
+): Promise<void> {
+  if (!soundName) return
+  if (Date.now() < state.macSoundDisabledUntil) return
+  if (state.macSoundInFlight) {
+    debugWarn('Skipping macOS sound because a previous sound is in flight')
+    return
+  }
+
+  const lowered = soundName.toLowerCase()
+  let command = ''
+  let args: string[] = []
+
+  if (lowered === 'default') {
+    if (!options.allowDefaultBeep) return
+    command = 'osascript'
+    args = ['-e', 'beep']
+  } else {
+    const soundPath = await resolveMacSoundPath(soundName)
+    if (!soundPath) {
+      visibleWarnOnce(
+        `mac-sound:${lowered}`,
+        `macOS sound "${soundName}" was not found; notification will stay silent to avoid the default alert beep`,
+      )
+      return
+    }
+    command = 'afplay'
+    args = [soundPath]
+  }
+
+  state.macSoundInFlight = true
+  void run(command, args, { timeoutMs: 8_000 })
+    .then((played) => {
+      if (played) {
+        state.macSoundFailures = 0
+        state.macSoundDisabledUntil = 0
+        return
+      }
+      state.macSoundFailures += 1
+      state.macSoundDisabledUntil =
+        Date.now() + backendBackoffMs(state.macSoundFailures)
+    })
+    .catch((error) => {
+      debugWarn(
+        `${command} failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
+    .finally(() => {
+      state.macSoundInFlight = false
+    })
 }
 
 async function notifyWindows(
@@ -531,40 +826,42 @@ async function notifyMac(
   body: string,
   event: NotifyEventType,
   sound: boolean | string,
-  _group: string,
+  group: string,
 ): Promise<boolean> {
   const now = Date.now()
   if (now < state.macNotifyDisabledUntil) return false
 
   const mapped = macSoundName(event, sound)
+  const useAppleScriptDefaultSound = mapped.toLowerCase() === 'default'
 
-  const script = [
-    'on run argv',
-    'set t to ""',
-    'set b to ""',
-    'set s to ""',
-    'if (count of argv) >= 1 then set t to item 1 of argv',
-    'if (count of argv) >= 2 then set b to item 2 of argv',
-    'if (count of argv) >= 3 then set s to item 3 of argv',
-    'if s is not "" then',
-    '  display notification b with title t sound name s',
-    'else',
-    '  display notification b with title t',
-    'end if',
-    'end run',
-  ].join('\n')
+  const backends =
+    state.macPreferredBackend === 'osascript'
+      ? (['osascript', 'helper'] as const)
+      : (['helper', 'osascript'] as const)
+  let ok = false
+  let usedHelper = false
+  let helperAttempted = false
 
-  // `system attribute` decodes UTF-8 environment values incorrectly on many
-  // macOS setups. Pass user text via argv to preserve Unicode.
-  // `_group` is intentionally ignored: AppleScript notifications do not
-  // support backend-level replace/group semantics.
-  // `display notification` does not expose click-action controls.
-  // We keep behavior best-effort by not registering any open/activate action.
-  const ok = await run(
-    'osascript',
-    ['-e', script, '--', title, body, sound === false ? '' : mapped],
-    { timeoutMs: 8000 },
-  )
+  for (const backend of backends) {
+    if (backend === 'helper') {
+      const attempt = await notifyMacWithHelper(state, title, body, group)
+      helperAttempted = helperAttempted || attempt.attempted
+      if (!attempt.ok) continue
+      ok = true
+      usedHelper = true
+      break
+    }
+
+    ok = await notifyMacWithAppleScript(
+      title,
+      body,
+      mapped,
+      sound !== false && useAppleScriptDefaultSound,
+    )
+    if (!ok) continue
+    state.macPreferredBackend = 'osascript'
+    break
+  }
 
   if (ok) {
     state.macNotifyFailures = 0
@@ -574,6 +871,25 @@ async function notifyMac(
     state.macNotifyDisabledUntil =
       now + backendBackoffMs(state.macNotifyFailures)
   }
+
+  if (!usedHelper) {
+    const helperDisabled = stripControlChars(
+      process.env.OPENCODE_NOTIFY_NATIVE_DISABLE_MAC_HELPER || '',
+    )
+    if (!helperDisabled) {
+      const reason = helperAttempted ? 'failed' : 'was unavailable'
+      visibleWarnOnce(
+        `mac-helper:degraded:${reason}`,
+        `macOS helper ${reason}; falling back to osascript with system-controlled click behavior`,
+      )
+    }
+  }
+
+  if (!ok || sound === false) return ok
+  if (!usedHelper && useAppleScriptDefaultSound) return ok
+
+  void playMacSound(state, mapped, { allowDefaultBeep: usedHelper })
+
   return ok
 }
 
