@@ -4,7 +4,6 @@ import { constants } from 'node:fs'
 import { access } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { backendBackoffMs } from './backoff.js'
 import { debugEnabled, debugWarn } from './debug.js'
@@ -53,57 +52,6 @@ function hashHex(input: string, length: number): string {
     .update(input, 'utf8')
     .digest('hex')
     .slice(0, length)
-}
-
-const packageRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
-const MAC_HELPER_APP_NAME = 'NotifyNativeHelper.app'
-const MAC_HELPER_EXECUTABLE = 'NotifyNativeHelper'
-
-function bundledMacHelperPath(): string {
-  return path.join(
-    packageRoot,
-    'vendor',
-    'macos',
-    MAC_HELPER_APP_NAME,
-    'Contents',
-    'MacOS',
-    MAC_HELPER_EXECUTABLE,
-  )
-}
-
-function macHelperOverridePath(): string {
-  const raw = stripControlChars(
-    process.env.OPENCODE_NOTIFY_NATIVE_MAC_HELPER || '',
-  )
-  if (!raw) return ''
-  if (raw.toLowerCase().endsWith('.app')) {
-    return path.join(raw, 'Contents', 'MacOS', MAC_HELPER_EXECUTABLE)
-  }
-  return raw
-}
-
-async function resolveMacHelperPath(): Promise<string | null> {
-  if (
-    stripControlChars(
-      process.env.OPENCODE_NOTIFY_NATIVE_DISABLE_MAC_HELPER || '',
-    )
-  ) {
-    return null
-  }
-
-  const override = macHelperOverridePath()
-  if (override) {
-    if (await fileExists(override)) return override
-    visibleWarnOnce(
-      `mac-helper:override:${override}`,
-      `configured macOS helper was not found at ${override}; falling back to osascript`,
-    )
-    return null
-  }
-
-  const bundled = bundledMacHelperPath()
-  if (await fileExists(bundled)) return bundled
-  return null
 }
 
 function windowsNotifierAppIds(): string[] {
@@ -395,9 +343,6 @@ type BackendState = {
   windowsPreferredShell: '' | 'pwsh' | 'powershell'
   macNotifyDisabledUntil: number
   macNotifyFailures: number
-  macHelperDisabledUntil: number
-  macHelperFailures: number
-  macPreferredBackend: '' | 'helper' | 'osascript'
   macSoundDisabledUntil: number
   macSoundFailures: number
   macSoundInFlight: boolean
@@ -416,9 +361,6 @@ function createBackendState(): BackendState {
     windowsPreferredShell: '',
     macNotifyDisabledUntil: 0,
     macNotifyFailures: 0,
-    macHelperDisabledUntil: 0,
-    macHelperFailures: 0,
-    macPreferredBackend: '',
     macSoundDisabledUntil: 0,
     macSoundFailures: 0,
     macSoundInFlight: false,
@@ -568,57 +510,6 @@ async function resolveMacSoundPath(soundName: string): Promise<string | null> {
   }
 
   return null
-}
-
-function macNotificationIdentifier(group: string): string {
-  return `opencode-${hashHex(group, 32)}`
-}
-
-type MacNotifyAttempt = {
-  ok: boolean
-  attempted: boolean
-}
-
-async function notifyMacWithHelper(
-  state: BackendState,
-  title: string,
-  body: string,
-  group: string,
-): Promise<MacNotifyAttempt> {
-  const now = Date.now()
-  if (now < state.macHelperDisabledUntil) {
-    return { ok: false, attempted: true }
-  }
-
-  const helperPath = await resolveMacHelperPath()
-  if (!helperPath) return { ok: false, attempted: false }
-
-  const ok = await run(
-    helperPath,
-    [
-      'notify',
-      '--title',
-      title,
-      '--body',
-      body,
-      '--identifier',
-      macNotificationIdentifier(group),
-      '--thread',
-      group,
-    ],
-    { timeoutMs: 8_000 },
-  )
-
-  if (ok) {
-    state.macHelperFailures = 0
-    state.macHelperDisabledUntil = 0
-    state.macPreferredBackend = 'helper'
-    return { ok: true, attempted: true }
-  }
-
-  state.macHelperFailures += 1
-  state.macHelperDisabledUntil = now + backendBackoffMs(state.macHelperFailures)
-  return { ok: false, attempted: true }
 }
 
 async function notifyMacWithAppleScript(
@@ -826,42 +717,19 @@ async function notifyMac(
   body: string,
   event: NotifyEventType,
   sound: boolean | string,
-  group: string,
+  _group: string,
 ): Promise<boolean> {
   const now = Date.now()
   if (now < state.macNotifyDisabledUntil) return false
 
   const mapped = macSoundName(event, sound)
   const useAppleScriptDefaultSound = mapped.toLowerCase() === 'default'
-
-  const backends =
-    state.macPreferredBackend === 'osascript'
-      ? (['osascript', 'helper'] as const)
-      : (['helper', 'osascript'] as const)
-  let ok = false
-  let usedHelper = false
-  let helperAttempted = false
-
-  for (const backend of backends) {
-    if (backend === 'helper') {
-      const attempt = await notifyMacWithHelper(state, title, body, group)
-      helperAttempted = helperAttempted || attempt.attempted
-      if (!attempt.ok) continue
-      ok = true
-      usedHelper = true
-      break
-    }
-
-    ok = await notifyMacWithAppleScript(
-      title,
-      body,
-      mapped,
-      sound !== false && useAppleScriptDefaultSound,
-    )
-    if (!ok) continue
-    state.macPreferredBackend = 'osascript'
-    break
-  }
+  const ok = await notifyMacWithAppleScript(
+    title,
+    body,
+    mapped,
+    sound !== false && useAppleScriptDefaultSound,
+  )
 
   if (ok) {
     state.macNotifyFailures = 0
@@ -872,23 +740,9 @@ async function notifyMac(
       now + backendBackoffMs(state.macNotifyFailures)
   }
 
-  if (!usedHelper) {
-    const helperDisabled = stripControlChars(
-      process.env.OPENCODE_NOTIFY_NATIVE_DISABLE_MAC_HELPER || '',
-    )
-    if (!helperDisabled) {
-      const reason = helperAttempted ? 'failed' : 'was unavailable'
-      visibleWarnOnce(
-        `mac-helper:degraded:${reason}`,
-        `macOS helper ${reason}; falling back to osascript with system-controlled click behavior`,
-      )
-    }
-  }
+  if (!ok || sound === false || useAppleScriptDefaultSound) return ok
 
-  if (!ok || sound === false) return ok
-  if (!usedHelper && useAppleScriptDefaultSound) return ok
-
-  void playMacSound(state, mapped, { allowDefaultBeep: usedHelper })
+  void playMacSound(state, mapped, { allowDefaultBeep: false })
 
   return ok
 }

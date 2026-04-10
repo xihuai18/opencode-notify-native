@@ -66,11 +66,11 @@ jobs:
         run: npm test
 
       - name: Pack plugin tarball
-        if: ${{ matrix.os == 'macos-latest' && matrix.node == 20 }}
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == 20 }}
         run: npm pack
 
       - name: Smoke test packed import
-        if: ${{ matrix.os == 'macos-latest' && matrix.node == 20 }}
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == 20 }}
         shell: bash
         run: |
           set -e

@@ -33,7 +33,7 @@ Evidence source: local OpenCode source in `opencode/` and official docs.
 4. Pass through dispatcher for collapse/cooldown.
 5. Send with platform backend:
    - Windows toast (PowerShell + WinRT)
-   - macOS (bundled helper for notification UI/click handling, explicit sound playback, `osascript` fallback)
+   - macOS (`osascript`, with explicit sound playback)
    - Linux (`notify-send`, with compatibility fallback argument modes)
 
 ## Design constraints

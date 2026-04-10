@@ -22,12 +22,6 @@ import {
   windowsAudioNode,
 } from '../native.js'
 
-const hostPlatformForTest = process.platform
-
-function wrappedCommandPath(tmp: string, name: string): string {
-  return path.join(tmp, hostPlatformForTest === 'win32' ? `${name}.cmd` : name)
-}
-
 async function writeWrappedCommand(tmp: string, name: string, script: string) {
   const nodePathForShell = process.execPath.replace(/"/g, '\\"')
   const nodePathForCmd = process.execPath.replace(/"/g, '""')
@@ -55,14 +49,12 @@ const args = process.argv.slice(3)
 appendFileSync(process.env.OC_TEST_NOTIFY_LOG, JSON.stringify({ cmd, args }) + '\\n')
 const ok =
   (cmd === 'osascript' && process.env.OC_TEST_OSASCRIPT_OK === '1') ||
-  (cmd === 'afplay' && process.env.OC_TEST_AFPLAY_OK === '1') ||
-  (cmd === 'NotifyNativeHelper' && process.env.OC_TEST_MAC_HELPER_OK === '1')
+  (cmd === 'afplay' && process.env.OC_TEST_AFPLAY_OK === '1')
 process.exit(ok ? 0 : 1)
 `
 
   await writeWrappedCommand(tmp, 'osascript', recorder)
   await writeWrappedCommand(tmp, 'afplay', recorder)
-  await writeWrappedCommand(tmp, 'NotifyNativeHelper', recorder)
 }
 
 async function createMacSoundFixture(
@@ -221,8 +213,6 @@ async function setupMacEnv(
   options: {
     osascriptOk: '0' | '1'
     afplayOk: '0' | '1'
-    helperOk: '0' | '1'
-    helperPath?: string
     homeDir?: string
   },
 ): Promise<() => void> {
@@ -231,8 +221,6 @@ async function setupMacEnv(
   const prevLog = process.env.OC_TEST_NOTIFY_LOG
   const prevOsa = process.env.OC_TEST_OSASCRIPT_OK
   const prevAfplay = process.env.OC_TEST_AFPLAY_OK
-  const prevHelper = process.env.OC_TEST_MAC_HELPER_OK
-  const prevHelperPath = process.env.OPENCODE_NOTIFY_NATIVE_MAC_HELPER
   const prevHome = process.env.HOME
   const prevUserProfile = process.env.USERPROFILE
   const prevPlatform = process.platform
@@ -245,9 +233,6 @@ async function setupMacEnv(
   process.env.OC_TEST_NOTIFY_LOG = logFile
   process.env.OC_TEST_OSASCRIPT_OK = options.osascriptOk
   process.env.OC_TEST_AFPLAY_OK = options.afplayOk
-  process.env.OC_TEST_MAC_HELPER_OK = options.helperOk
-  process.env.OPENCODE_NOTIFY_NATIVE_MAC_HELPER =
-    options.helperPath || wrappedCommandPath(binDir, 'NotifyNativeHelper')
   if (options.homeDir) {
     process.env.HOME = options.homeDir
     process.env.USERPROFILE = options.homeDir
@@ -266,11 +251,6 @@ async function setupMacEnv(
     else process.env.OC_TEST_OSASCRIPT_OK = prevOsa
     if (prevAfplay === undefined) delete process.env.OC_TEST_AFPLAY_OK
     else process.env.OC_TEST_AFPLAY_OK = prevAfplay
-    if (prevHelper === undefined) delete process.env.OC_TEST_MAC_HELPER_OK
-    else process.env.OC_TEST_MAC_HELPER_OK = prevHelper
-    if (prevHelperPath === undefined)
-      delete process.env.OPENCODE_NOTIFY_NATIVE_MAC_HELPER
-    else process.env.OPENCODE_NOTIFY_NATIVE_MAC_HELPER = prevHelperPath
     if (prevHome === undefined) delete process.env.HOME
     else process.env.HOME = prevHome
     if (prevUserProfile === undefined) delete process.env.USERPROFILE
@@ -587,7 +567,7 @@ test(
 )
 
 test(
-  'darwin notifier prefers helper and keeps sound external',
+  'darwin notifier uses osascript and afplay with expected sound mapping',
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), 'notify-native-bin-'))
@@ -597,7 +577,6 @@ test(
     const restore = await setupMacEnv(binDir, logFile, {
       osascriptOk: '1',
       afplayOk: '1',
-      helperOk: '1',
     })
 
     try {
@@ -615,16 +594,13 @@ test(
 
       const log = await waitForLogCount(logFile, 2)
       assert.equal(log.length, 2)
-      assert.equal(log[0].cmd, 'NotifyNativeHelper')
-      assert.equal(log[0].args[0], 'notify')
-      assert.equal(log[0].args[1], '--title')
-      assert.equal(log[0].args[2], 'Title')
-      assert.equal(log[0].args[3], '--body')
+      assert.equal(log[0].cmd, 'osascript')
+      assert.equal(log[0].args[0], '-e')
+      assert.match(log[0].args[1], /display notification/)
+      assert.equal(log[0].args[2], '--')
+      assert.equal(log[0].args[3], 'Title')
       assert.equal(log[0].args[4], 'Body')
-      assert.equal(log[0].args[5], '--identifier')
-      assert.match(log[0].args[6], /^opencode-[0-9a-f]{32}$/)
-      assert.equal(log[0].args[7], '--thread')
-      assert.equal(log[0].args[8], 'mac-group')
+      assert.equal(log[0].args[5], '')
       assert.equal(log[1].cmd, 'afplay')
       assert.match(
         log[1].args[0],
@@ -650,7 +626,6 @@ test(
     const restore = await setupMacEnv(binDir, logFile, {
       osascriptOk: '1',
       afplayOk: '1',
-      helperOk: '1',
       homeDir,
     })
 
@@ -669,7 +644,8 @@ test(
 
       const log = await waitForLogCount(logFile, 2)
       assert.equal(log.length, 2)
-      assert.equal(log[0].cmd, 'NotifyNativeHelper')
+      assert.equal(log[0].cmd, 'osascript')
+      assert.equal(log[0].args[5], '')
       assert.equal(log[1].cmd, 'afplay')
       assert.equal(log[1].args[0], customSoundPath)
     } finally {
@@ -681,7 +657,7 @@ test(
 )
 
 test(
-  'darwin helper path respects sound false',
+  'darwin notifier uses osascript and respects sound false',
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), 'notify-native-bin-'))
@@ -691,7 +667,6 @@ test(
     const restore = await setupMacEnv(binDir, logFile, {
       osascriptOk: '1',
       afplayOk: '1',
-      helperOk: '1',
     })
 
     try {
@@ -709,8 +684,13 @@ test(
 
       const log = await readLog(logFile)
       assert.equal(log.length, 1)
-      assert.equal(log[0].cmd, 'NotifyNativeHelper')
-      assert.equal(log[0].args[0], 'notify')
+      assert.equal(log[0].cmd, 'osascript')
+      assert.equal(log[0].args[0], '-e')
+      assert.match(log[0].args[1], /\nend run$/)
+      assert.equal(log[0].args[2], '--')
+      assert.equal(log[0].args[3], 'OpenCode · 测试')
+      assert.equal(log[0].args[4], 'Body · 任务完成')
+      assert.equal(log[0].args[5], '')
     } finally {
       restore()
       await cleanupTmpDir(binDir)
@@ -719,7 +699,7 @@ test(
 )
 
 test(
-  'darwin helper path keeps unresolved sounds silent',
+  'darwin notifier keeps unresolved sounds silent',
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), 'notify-native-bin-'))
@@ -729,7 +709,6 @@ test(
     const restore = await setupMacEnv(binDir, logFile, {
       osascriptOk: '1',
       afplayOk: '1',
-      helperOk: '1',
     })
 
     try {
@@ -747,7 +726,8 @@ test(
 
       const log = await readLog(logFile)
       assert.equal(log.length, 1)
-      assert.equal(log[0].cmd, 'NotifyNativeHelper')
+      assert.equal(log[0].cmd, 'osascript')
+      assert.equal(log[0].args[5], '')
     } finally {
       restore()
       await cleanupTmpDir(binDir)
@@ -756,7 +736,7 @@ test(
 )
 
 test(
-  'darwin notifier falls back to osascript when helper fails',
+  'darwin notifier emits osascript plus afplay for named sounds',
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), 'notify-native-bin-'))
@@ -766,7 +746,6 @@ test(
     const restore = await setupMacEnv(binDir, logFile, {
       osascriptOk: '1',
       afplayOk: '1',
-      helperOk: '0',
     })
 
     try {
@@ -775,19 +754,18 @@ test(
         notify({
           title: 'Title',
           body: 'Body',
-          event: 'complete',
+          event: 'attention',
           sound: true,
-          group: 'mac-helper-fallback',
+          group: 'mac-sound-retry',
         }),
       )
 
       assert.equal(ok, true)
 
-      const log = await waitForLogCount(logFile, 3)
-      assert.equal(log.length, 3)
-      assert.equal(log[0].cmd, 'NotifyNativeHelper')
-      assert.equal(log[1].cmd, 'osascript')
-      assert.equal(log[2].cmd, 'afplay')
+      const log = await waitForLogCount(logFile, 2)
+      assert.equal(log.length, 2)
+      assert.equal(log[0].cmd, 'osascript')
+      assert.equal(log[1].cmd, 'afplay')
     } finally {
       restore()
       await cleanupTmpDir(binDir)
@@ -796,7 +774,7 @@ test(
 )
 
 test(
-  'darwin notifier backs off after repeated helper and osascript failures',
+  'darwin notifier backs off after repeated osascript failures',
   { concurrency: false },
   async () => {
     const binDir = await mkdtemp(path.join(os.tmpdir(), 'notify-native-bin-'))
@@ -806,7 +784,6 @@ test(
     const restore = await setupMacEnv(binDir, logFile, {
       osascriptOk: '0',
       afplayOk: '1',
-      helperOk: '0',
     })
 
     try {
@@ -817,7 +794,6 @@ test(
           body: 'Body',
           event: 'complete',
           sound: true,
-          group: 'mac-backoff',
         }),
       )
       const second = await awaitWithKeepAlive(
@@ -826,7 +802,6 @@ test(
           body: 'Body2',
           event: 'complete',
           sound: true,
-          group: 'mac-backoff-2',
         }),
       )
 
@@ -834,9 +809,8 @@ test(
       assert.equal(second, false)
 
       const log = await readLog(logFile)
-      assert.equal(log.length, 2)
-      assert.equal(log[0].cmd, 'NotifyNativeHelper')
-      assert.equal(log[1].cmd, 'osascript')
+      assert.equal(log.length, 1)
+      assert.equal(log[0].cmd, 'osascript')
     } finally {
       restore()
       await cleanupTmpDir(binDir)
