@@ -537,11 +537,18 @@ async function notifyMacWithAppleScript(
   // `system attribute` decodes UTF-8 environment values incorrectly on many
   // macOS setups. Pass user text via argv to preserve Unicode.
   // `display notification` does not expose click-action controls.
-  return run(
+  const ok = await run(
     'osascript',
     ['-e', script, '--', title, body, useDefaultSound ? soundName : ''],
-    { timeoutMs: 8_000 },
+    { timeoutMs: 8_000, captureStderr: true },
   )
+  if (!ok) {
+    visibleWarnOnce(
+      'mac-osascript:permission-hint',
+      'macOS notifications use Script Editor permissions; if notifications do not appear on Sequoia/Tahoe, open Script Editor once, run `display notification "test" with title "test"`, and allow notifications for Script Editor in System Settings',
+    )
+  }
+  return ok
 }
 
 async function playMacSound(

@@ -170,6 +170,7 @@ Notes:
 - Windows command launch is hardened for `.cmd`/shim-heavy environments (including CI) with retry and shell fallbacks.
 - macOS: uses `osascript` (`display notification`) for notification UI and best-effort explicit sound playback. This backend cannot replace/group notifications at the OS level.
 - macOS sound names accept both legacy file names (`Glass`, `Basso`, `Funk`, ...) and newer UI labels (`Crystal`, `Mezzo`, `Boop`, ...). Custom sounds resolve from `~/Library/Sounds`, `/Library/Sounds`, then `/System/Library/Sounds`.
+- macOS Sequoia/Tahoe note: `osascript` notifications are delivered as Script Editor. On first use, users may need to open Script Editor once, run `display notification "test" with title "test"`, and allow notifications for Script Editor in System Settings.
 - Linux: requires `notify-send` (for example `libnotify-bin` on Debian/Ubuntu). Backend delivery falls back through `long -> short -> plain -> minimal` argument modes for compatibility.
 - Linux sound: `notify-send` has no standard sound support; this plugin can only best-effort play sounds when `canberra-gtk-play` is available.
 - Sender identity is platform-defined: macOS `osascript` does not support setting the sender to the current terminal, Windows sender is tied to the selected AUMID, and Linux can only provide a best-effort app name (`opencode`).
@@ -181,6 +182,7 @@ If a config file exists but is ignored (for example due to invalid JSON), this p
 - Non-ENOENT config load failures emit a one-time warning to stderr.
 - Unknown config keys emit a one-time warning and are ignored.
 - Backend command spawn failures also emit one-time warnings to stderr.
+- If macOS notifications never appear, run this one-time permission check in Script Editor: `display notification "test" with title "test"`.
 - Set `OPENCODE_NOTIFY_NATIVE_DEBUG=1` for detailed debug logs (including full error messages and ignored event traces).
 - Config is loaded once at plugin initialization (no hot-reload during a running session).
 
